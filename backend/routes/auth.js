@@ -62,6 +62,7 @@ router.post('/register', async (req, res) => {
       token: sign(user.id, user.isAdmin)
     });
   } catch (e) {
+    console.error('[AUTH] Registration crashed:', e);
     res.status(500).json({ message: e.message });
   }
 });
