@@ -4,8 +4,39 @@ const path = require('path');
 require('dotenv').config({ override: true });
 const connectDB = require('./config/database');
 
-// Trigger MongoDB connection (Mongoose handles buffering/connecting automatically)
-connectDB().catch(err => {
+// Trigger MongoDB connection and seed database in serverless/production environments
+connectDB().then(async () => {
+    try {
+        const { SuperAdmin, User } = require('./models');
+        const existingAdmin = await SuperAdmin.findOne({ email: 'smdigitalworks1@gmail.com' });
+        if (!existingAdmin) {
+            console.log('👑 Seeding default SuperAdmin...');
+            const newAdmin = await SuperAdmin.create({
+                name: 'Super Admin',
+                email: 'smdigitalworks1@gmail.com',
+                password: 'smdigitalworks', // Hashed automatically on save
+            });
+            console.log('👑 Default SuperAdmin seeded successfully: smdigitalworks1@gmail.com / smdigitalworks');
+            
+            const shadowUser = await User.findOne({ _id: newAdmin._id });
+            if (!shadowUser) {
+                await User.create({
+                    _id: newAdmin._id,
+                    name: 'Super Admin',
+                    email: 'sa_shadow_system_admin@smdigitalworks.com',
+                    password: 'shadow_password_do_not_use123',
+                    role: 'superadmin',
+                    isAdmin: true,
+                    subStatus: 'active',
+                    subExpiry: new Date('2099-12-31')
+                });
+                console.log('🔥 Shadow user seeded successfully to match SuperAdmin in User model.');
+            }
+        }
+    } catch (e) {
+        console.error("❌ Error seeding default credentials on startup:", e.message);
+    }
+}).catch(err => {
     console.error("❌ MongoDB connection error on app startup:", err.message);
 });
 
