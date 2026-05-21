@@ -1,12 +1,13 @@
 const app = require('./app');
 const http = require('http');
-const { sequelize } = require('./models');
+const connectDB = require('./config/database');
+const { User, SuperAdmin, Schedule, Automation, Subscription } = require('./models');
 const { Server } = require('socket.io');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
 const cron = require('node-cron');
 const path = require('path');
-require('dotenv').config();
+require('dotenv').config({ override: true });
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -21,33 +22,27 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('🔥 Global Unhandled Rejection (ignored):', reason?.message || reason);
 });
 
-// ── Database Sync ──────────────────────────────────────────────
-sequelize.sync({ alter: true })
-  .then(async () => {
-    console.log(`✅ ${sequelize.options.dialect.toUpperCase()} Database synced`);
-    const { SuperAdmin } = require('./models');
-    const existingAdmin = await SuperAdmin.findOne({ where: { email: 'smdigitalworks1@gmail.com' } });
+// ── Database Connection & Seeding ──────────────────────────────
+connectDB().then(async () => {
+    // 👑 Seed Default SuperAdmin
+    const existingAdmin = await SuperAdmin.findOne({ email: 'smdigitalworks1@gmail.com' });
     if (!existingAdmin) {
       await SuperAdmin.create({
         name: 'Super Admin',
         email: 'smdigitalworks1@gmail.com',
-        password: 'smdigitalworks', // Can be changed later
+        password: 'smdigitalworks', // Will be hashed by pre-save hook
       });
       console.log('👑 Default SuperAdmin seeded: smdigitalworks1@gmail.com / smdigitalworks');
     }
 
-    // 🔥 Create Shadow User to satisfy foreign key constraints:
-    // MySQL foreign keys on (contacts, campaigns) check the `Users` table. 
-    // SuperAdmin ID doesn't normally exist there, which triggers a crash on save.
-    const { User } = require('./models');
+    // 🔥 Create Shadow User to satisfy legacy requirements if any
     try {
-      const sa = await SuperAdmin.findOne({ where: { email: 'smdigitalworks1@gmail.com' } });
+      const sa = await SuperAdmin.findOne({ email: 'smdigitalworks1@gmail.com' });
       if (sa) {
-         const shadowUser = await User.findByPk(sa.id);
+         const shadowUser = await User.findOne({ _id: sa._id });
          if (!shadowUser) {
-           // Shadow user for the Super Admin
            await User.create({
-             id: sa.id,
+             _id: sa._id,
              name: 'Super Admin',
              email: 'sa_shadow_system_admin@smdigitalworks.com',
              password: 'shadow_password_do_not_use123',
@@ -57,30 +52,47 @@ sequelize.sync({ alter: true })
              subStatus: 'active',
              subExpiry: new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000) // 100 years
            });
-         } else if (shadowUser.email !== 'sa_shadow_system_admin@smdigitalworks.com' && shadowUser.email !== sa.email) {
-            // Edge case: A regular user registered with ID=1. 
-            console.warn('⚠️ User with ID 1 already exists, foreign keys for Super Admin might conflict if not handled.');
          }
       }
       
-      // Automatically make 'sathiyans2003@gmail.com' an Admin so you never get blocked
-      await User.update({ isAdmin: true, role: 'admin', subStatus: 'active' }, { where: { email: 'sathiyans2003@gmail.com' } });
+      // Automatically make 'sathiyans2003@gmail.com' a Super Admin
+      await User.findOneAndUpdate(
+        { email: 'sathiyans2003@gmail.com' },
+        { isAdmin: true, role: 'superadmin', subStatus: 'active' }
+      );
     } catch(err) { console.error('Failed to seed shadow user:', err.message); }
 
-  })
-  .catch(e => {
-    console.error(`❌ ${sequelize.options.dialect.toUpperCase()} Database connection error:`, e.name, e.message);
-    if (e.original) console.error(e.original);
-  });
+    // Load schedules after DB is connected
+    loadSchedules();
+
+}).catch(e => {
+    console.error(`❌ MongoDB connection error:`, e.message);
+});
 
 // ── Per-User WhatsApp State ───────────────────────────────────
 const waClients = new Map(); // globalUid → Client (globalUid is "user_#ID" or "sa_#ID")
 const waStatuses = new Map(); // globalUid → status string
+const pendingInits = new Set(); // Tracks active initialization sequences to prevent concurrent double-initializations
 
 // Return a specific account's client
 function getClientForUser(userId, isSuper = false) {
-  const guid = isSuper ? `sa_${userId}` : `user_${userId}`;
-  return waClients.get(guid) || null;
+  const primaryGuid = isSuper ? `sa_${userId}` : `user_${userId}`;
+  const secondaryGuid = isSuper ? `user_${userId}` : `sa_${userId}`;
+
+  // 1. Try to find primary client and ensure it is ready (info exists)
+  const primaryClient = waClients.get(primaryGuid);
+  if (primaryClient && primaryClient.info) {
+    return primaryClient;
+  }
+
+  // 2. Try the other secondary prefix as fallback if it is ready
+  const secondaryClient = waClients.get(secondaryGuid);
+  if (secondaryClient && secondaryClient.info) {
+    return secondaryClient;
+  }
+
+  // 3. Fallback to whichever client exists if neither has info yet
+  return primaryClient || secondaryClient || null;
 }
 
 // Fallback: return any connected client (legacy helper)
@@ -96,23 +108,46 @@ app.set('getClientForUser', getClientForUser);
 function emitToUser(guid, event, data) {
   io.to(`room_${guid}`).emit(event, data);
 }
+global.emitToUser = emitToUser;
 
-function initWhatsApp(userId, isSuper = false) {
+async function initWhatsApp(userId, isSuper = false) {
   const guid = isSuper ? `sa_${userId}` : `user_${userId}`;
-  const existing = waClients.get(guid);
-  if (existing) {
-    try { existing.destroy(); } catch { }
-    waClients.delete(guid);
-    waStatuses.delete(guid);
-    return setTimeout(() => _doInit(guid, userId, isSuper), 2000);
+  if (pendingInits.has(guid)) {
+    console.log(`⏳ [initWhatsApp] Skipping duplicate call: initialization already in progress for [${guid}]`);
+    return;
   }
-  _doInit(guid, userId, isSuper);
+  pendingInits.add(guid);
+
+  try {
+    const existing = waClients.get(guid);
+    if (existing) {
+      console.log(`🧹 [initWhatsApp] Destroying existing client for [${guid}]...`);
+      try {
+        await existing.destroy();
+        console.log(`✅ [initWhatsApp] Existing client browser destroyed for [${guid}]`);
+      } catch (e) {
+        console.error(`⚠️ [initWhatsApp] Error destroying existing client for [${guid}]:`, e.message);
+      }
+      waClients.delete(guid);
+      waStatuses.delete(guid);
+      // Wait to ensure all file handles are closed
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+    _doInit(guid, userId, isSuper);
+  } finally {
+    pendingInits.delete(guid);
+  }
 }
 
 function _doInit(guid, userId, isSuper) {
   const client = new Client({
     authStrategy: new LocalAuth({ clientId: guid }),
-    // Using default version to avoid network issues with GitHub
+    webVersion: '2.3000.1039860984-alpha',
+    webVersionCache: {
+      type: 'local',
+      path: path.join(__dirname, '.wwebjs_cache'),
+      strict: false
+    },
     puppeteer: {
       headless: "new",
       protocolTimeout: 180000, // ⏱️ 3 min timeout to avoid ProtocolError crashes
@@ -125,6 +160,8 @@ function _doInit(guid, userId, isSuper) {
         '--disable-extensions',
         '--disable-background-networking',
         '--disable-default-apps',
+        '--no-zygote',
+        '--disable-accelerated-2d-canvas',
       ],
     },
   });
@@ -150,8 +187,11 @@ function _doInit(guid, userId, isSuper) {
 
       try {
         const { User, SuperAdmin } = require('./models');
-        const account = isSuper ? await SuperAdmin.findByPk(userId) : await User.findByPk(userId);
-        if (account) await account.update({ whatsappNumber: connectedNumber });
+        const account = isSuper ? await SuperAdmin.findById(userId) : await User.findById(userId);
+        if (account) {
+          account.whatsappNumber = connectedNumber;
+          await account.save();
+        }
       } catch (err) {
         console.error('Error updating whatsapp number:', err.message);
       }
@@ -166,22 +206,38 @@ function _doInit(guid, userId, isSuper) {
     } catch (err) { console.error(`Ready event error [${guid}]:`, err.message); }
   });
 
-  client.on('disconnected', (reason) => {
+  client.on('disconnected', async (reason) => {
+    const status = waStatuses.get(guid);
+    const sessionDir = path.join(__dirname, '.wwebjs_auth', `session-${guid}`);
+    const shouldReconnect = status !== 'logging_out' && reason !== 'LOGOUT' && fs.existsSync(sessionDir);
+
     waStatuses.set(guid, 'disconnected');
+    
+    // Explicitly destroy client to close active Puppeteer browser and release file locks
+    try {
+      console.log(`🧹 [disconnected] Terminating browser on disconnect for [${guid}]...`);
+      await client.destroy();
+      console.log(`✅ [disconnected] Browser terminated for [${guid}]`);
+    } catch (e) {
+      console.error(`⚠️ [disconnected] Error destroying client on disconnect [${guid}]:`, e.message);
+    }
+    
     waClients.delete(guid);
     emitToUser(guid, 'whatsapp:status', { status: 'disconnected', reason });
     console.log(`❌ WhatsApp disconnected [${guid}]:`, reason);
 
-    // Auto-reconnect 24/7 if not explicitly logged out
-    if (reason !== 'NAVIGATION' && reason !== 'LOGOUT') {
+    if (shouldReconnect) {
       console.log(`🔄 Auto-restarting WhatsApp for [${guid}] in 10s...`);
       setTimeout(() => initWhatsApp(userId, isSuper), 10000);
     }
   });
 
-  client.on('auth_failure', (msg) => {
+  client.on('auth_failure', async (msg) => {
     console.error(`🔐 Auth failure [${guid}]:`, msg);
     waStatuses.set(guid, 'auth_failure');
+    try {
+      await client.destroy();
+    } catch (e) {}
     waClients.delete(guid);
     emitToUser(guid, 'whatsapp:status', { status: 'auth_failure' });
   });
@@ -193,18 +249,16 @@ function _doInit(guid, userId, isSuper) {
       emitToUser(guid, 'whatsapp:message', { from: msg.from, body: msg.body, time: msg.timestamp });
 
       if (!isSuper) {
-        const AutoReply = require('./models/AutoReply');
-        const rules = await AutoReply.findAll({
-          where: { active: true, userId: userId },
-          order: [['order', 'ASC']]
-        });
+        const { AutoReply } = require('./models');
+        const rules = await AutoReply.find({ active: true, userId: userId }).sort({ order: 1 });
+        
         for (const rule of rules) {
           const body = (msg.body || '').toLowerCase();
           const matches = rule.triggerType === 'any' ? true : rule.triggerType === 'exact' ? body === rule.trigger.toLowerCase() : body.includes(rule.trigger.toLowerCase());
           if (matches) {
             // Check cooldown if delayHours > 0
             if (rule.delayHours && rule.delayHours > 0) {
-              const cooldownKey = `ar_${userId}_${rule.id}_${msg.from}`;
+              const cooldownKey = `ar_${userId}_${rule._id}_${msg.from}`;
               if (!global.autoReplyCooldowns) global.autoReplyCooldowns = new Map();
               const lastTime = global.autoReplyCooldowns.get(cooldownKey) || 0;
               const now = Date.now();
@@ -233,16 +287,26 @@ function _doInit(guid, userId, isSuper) {
   // ── Safe initialize with auto-retry on ProtocolError ──────────
   const tryInit = (attempt = 1) => {
     console.log(`🔄 WhatsApp init attempt ${attempt} [${guid}]`);
-    client.initialize().catch((err) => {
+    client.initialize().catch(async (err) => {
       const msg = err.message || '';
       const isTimeout = msg.includes('ProtocolError') || msg.includes('protocolTimeout') || msg.includes('timed out');
       const isStuck = msg.includes('already running') || msg.includes('context was destroyed') || msg.includes('detached');
+
+      // Make sure we always destroy the failed browser instance to release file locks
+      try {
+        console.log(`🧹 [tryInit] Terminating failed browser for [${guid}]...`);
+        await client.destroy();
+        console.log(`✅ [tryInit] Failed browser destroyed for [${guid}]`);
+      } catch (e) {
+        console.error(`⚠️ [tryInit] Error destroying failed client [${guid}]:`, e.message);
+      }
+      waClients.delete(guid);
 
       if ((isTimeout || isStuck) && attempt < 3) {
         console.warn(`⚠️ WhatsApp init issue [${guid}] — retrying in 10s (attempt ${attempt}/3)... Error: ${msg.substring(0, 50)}`);
 
         if (isStuck) {
-          // Delete the stuck session folder to force a clean restart without losing db contacts
+          // Now that the old browser is destroyed, delete the corrupt session folder cleanly without EPERM errors
           const fs = require('fs');
           const sessionPath = path.join(__dirname, '.wwebjs_auth', `session-${guid}`);
           try {
@@ -255,11 +319,14 @@ function _doInit(guid, userId, isSuper) {
 
         waStatuses.set(guid, 'connecting');
         emitToUser(guid, 'whatsapp:status', { status: 'connecting' });
-        setTimeout(() => tryInit(attempt + 1), 10000);
+        
+        // Spawn a completely fresh client instance for the retry
+        setTimeout(() => {
+          _doInit(guid, userId, isSuper);
+        }, 10000);
       } else {
         console.error(`❌ WhatsApp init failed [${guid}] after ${attempt} attempts:`, msg);
         waStatuses.set(guid, 'disconnected');
-        waClients.delete(guid);
         emitToUser(guid, 'whatsapp:status', { status: 'disconnected', reason: 'init_failed' });
       }
     });
@@ -281,7 +348,14 @@ io.on('connection', (socket) => {
 
     // Send this user's current status
     const status = waStatuses.get(guid) || 'disconnected';
-    socket.emit('whatsapp:status', { status });
+    const client = waClients.get(guid);
+    let phone = null;
+    let name = null;
+    if (status === 'connected' && client && client.info) {
+      phone = client.info.wid?.user || null;
+      name = client.info.pushname || null;
+    }
+    socket.emit('whatsapp:status', { status, phone, name });
   });
 
   socket.on('whatsapp:connect', (data = {}) => {
@@ -297,9 +371,13 @@ io.on('connection', (socket) => {
     const isSuper = role === 'superadmin';
     const guid = isSuper ? `sa_${userId}` : `user_${userId}`;
 
+    // Mark as explicitly logging out so disconnected handler knows not to restart it
+    waStatuses.set(guid, 'logging_out');
+
     const client = waClients.get(guid);
     if (client) {
       try { await client.logout(); } catch { }
+      try { await client.destroy(); } catch { }
       waClients.delete(guid);
     }
     waStatuses.set(guid, 'disconnected');
@@ -310,11 +388,10 @@ io.on('connection', (socket) => {
 // ── Cron: load active schedules on startup ───────────────────
 async function loadSchedules() {
   try {
-    const Schedule = require('./models/Schedule');
-    const Automation = require('./models/Automation');
+    const { Schedule, Automation } = require('./models');
 
     // Load existing old schedules
-    const schedules = await Schedule.findAll({ where: { active: true } });
+    const schedules = await Schedule.find({ active: true });
     schedules.forEach(s => startScheduleCron(s));
 
     console.log(`📅 Loaded ${schedules.length} old schedules`);
@@ -323,13 +400,10 @@ async function loadSchedules() {
     cron.schedule('* * * * *', async () => {
       try {
         const getClientForUser = app.get('getClientForUser');
-        const { Op } = require('sequelize');
-        const automations = await Automation.findAll({
-          where: {
+        const automations = await Automation.find({
             status: 'active',
             triggerType: 'schedule',
-            scheduledAt: { [Op.lte]: new Date() } // Past or current time
-          }
+            scheduledAt: { $lte: new Date() } // Past or current time
         });
 
         for (const auto of automations) {
@@ -342,7 +416,7 @@ async function loadSchedules() {
           }
 
           const { runAutomation } = require('./utils/automationEngine');
-          runAutomation(auto.id, userClient).catch(e => console.error(e));
+          runAutomation(auto._id, userClient).catch(e => console.error(e));
 
           // mark as completed to avoid rerunning
           auto.status = 'completed';
@@ -402,30 +476,31 @@ async function runScheduledJob(schedule) {
 }
 
 function startScheduleCron(schedule) {
+  const sId = schedule._id.toString();
   // Clear existing
-  if (activeCrons[schedule.id]) {
-    if (typeof activeCrons[schedule.id].stop === 'function') {
-      activeCrons[schedule.id].stop();
+  if (activeCrons[sId]) {
+    if (typeof activeCrons[sId].stop === 'function') {
+      activeCrons[sId].stop();
     } else {
-      clearTimeout(activeCrons[schedule.id]);
+      clearTimeout(activeCrons[sId]);
     }
-    delete activeCrons[schedule.id];
+    delete activeCrons[sId];
   }
 
   if (!schedule.active) return;
 
   if (schedule.isRecurring) {
     if (schedule.cronExpr && cron.validate(schedule.cronExpr)) {
-      activeCrons[schedule.id] = cron.schedule(schedule.cronExpr, () => runScheduledJob(schedule));
+      activeCrons[sId] = cron.schedule(schedule.cronExpr, () => runScheduledJob(schedule));
     }
   } else if (schedule.scheduledAt) {
     const delay = new Date(schedule.scheduledAt).getTime() - Date.now();
     if (delay > 0) {
-      activeCrons[schedule.id] = setTimeout(async () => {
+      activeCrons[sId] = setTimeout(async () => {
         await runScheduledJob(schedule);
         schedule.active = false;
         await schedule.save();
-        delete activeCrons[schedule.id];
+        delete activeCrons[sId];
       }, delay);
     }
   }
@@ -435,16 +510,13 @@ app.set('startScheduleCron', startScheduleCron);
 
 // ── Daily Subscription Expiry Check (4 AM) ─────────────────────
 const syncToSheets = require('./utils/syncSheets');
-const { Op } = require('sequelize');
 cron.schedule('0 4 * * *', async () => {
   console.log('🕒 Running daily subscription expiry check...');
   try {
     const { User } = require('./models');
-    const expired = await User.findAll({
-      where: {
-        subStatus: { [Op.or]: ['active', 'trial'] },
-        subExpiry: { [Op.lt]: new Date() }
-      }
+    const expired = await User.find({
+        subStatus: { $in: ['active', 'trial'] },
+        subExpiry: { $lt: new Date() }
     });
     for (const user of expired) {
       user.subStatus = 'expired';
@@ -471,15 +543,12 @@ cron.schedule('*/5 * * * *', async () => {
       key_secret: process.env.RAZORPAY_KEY_SECRET,
     });
 
-    const { Op } = require('sequelize');
     // Fetch pending payments older than 15 minutes
     const fifteenMinsAgo = new Date(Date.now() - 15 * 60 * 1000);
 
-    const pendingSubs = await Subscription.findAll({
-      where: {
+    const pendingSubs = await Subscription.find({
         status: 'pending',
-        createdAt: { [Op.lt]: fifteenMinsAgo }
-      }
+        createdAt: { $lt: fifteenMinsAgo }
     });
 
     if (pendingSubs.length > 0) console.log(`🔄 Checking ${pendingSubs.length} pending payments...`);
@@ -511,11 +580,14 @@ cron.schedule('*/5 * * * *', async () => {
               await sub.save();
 
               // Update User status automatically
-              await User.update({
-                subStatus: 'active',
-                subExpiry: sub.endDate,
-                isAdmin: planData.type === 'admin'
-              }, { where: { id: sub.userId } });
+              await User.updateOne(
+                { _id: sub.userId },
+                {
+                  subStatus: 'active',
+                  subExpiry: sub.endDate,
+                  isAdmin: planData.type === 'admin'
+                }
+              );
 
               console.log(`✅ Auto-recovered payment for order ${sub.razorpayOrderId}`);
               continue; // jump to next subscription
@@ -529,7 +601,7 @@ cron.schedule('*/5 * * * *', async () => {
         console.log(`❌ Auto-failed abandoned payment for order ${sub.razorpayOrderId}`);
 
       } catch (err) {
-        console.error(`Error checking subscription ${sub.id}:`, err.message);
+        console.error(`Error checking subscription ${sub._id}:`, err.message);
       }
     }
   } catch (e) {
@@ -537,33 +609,92 @@ cron.schedule('*/5 * * * *', async () => {
   }
 });
 
-// ── Wait for DB to load schedules
-sequelize.authenticate().then(loadSchedules).catch(() => console.error('Failed to load schedules: DB down'));
-
 // ── React Fallback ───────────────────────────────────────────
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '../frontend/build', 'index.html'));
 });
 
-// ── Auto-Start Existing WhatsApp Sessions on Boot ─────────────
+// ── Pre-populate WhatsApp Web Cache ───────────────────────────
 const fs = require('fs');
-const authDir = path.join(__dirname, '.wwebjs_auth');
-if (fs.existsSync(authDir)) {
-  console.log('🔄 Scanning for existing WhatsApp sessions...');
-  fs.readdirSync(authDir).forEach((dir, index) => {
-    if (dir.startsWith('session-')) {
-      const guid = dir.replace('session-', '');
-      const isSuper = guid.startsWith('sa_');
-      const userId = guid.replace('sa_', '').replace('user_', '');
-
-      // Delay each boot by 3-5 seconds to prevent CPU overload
-      setTimeout(() => {
-        console.log(`🚀 Auto-resuming WhatsApp session: ${guid}`);
-        initWhatsApp(userId, isSuper);
-      }, index * 4000);
+const WEB_VERSION = '2.3000.1039860984-alpha';
+async function ensureWebCacheExists() {
+  const cacheDir = path.join(__dirname, '.wwebjs_cache');
+  const cachePath = path.join(cacheDir, `${WEB_VERSION}.html`);
+  if (fs.existsSync(cachePath)) {
+    console.log(`✅ WhatsApp Web Version Cache matches target [${WEB_VERSION}].`);
+    return;
+  }
+  
+  console.log(`📥 Downloading WhatsApp Web HTML cache version ${WEB_VERSION} for ultra-fast startup...`);
+  try {
+    const fetch = require('node-fetch');
+    const url = `https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/${WEB_VERSION}.html`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
     }
-  });
+    const html = await res.text();
+    fs.mkdirSync(cacheDir, { recursive: true });
+    fs.writeFileSync(cachePath, html, 'utf-8');
+    console.log(`✨ Local WhatsApp Web cache successfully populated: ${WEB_VERSION}`);
+  } catch (err) {
+    console.error(`⚠️ Failed to pre-populate WhatsApp cache:`, err.message);
+  }
 }
+
+// ── Auto-Start Existing WhatsApp Sessions on Boot ─────────────
+const authDir = path.join(__dirname, '.wwebjs_auth');
+async function bootstrap() {
+  await ensureWebCacheExists();
+  if (fs.existsSync(authDir)) {
+    console.log('🔄 Scanning for existing WhatsApp sessions...');
+    const startedUsers = new Set();
+    let index = 0;
+    fs.readdirSync(authDir).forEach((dir) => {
+      if (dir.startsWith('session-')) {
+        const guid = dir.replace('session-', '');
+        const isSuper = guid.startsWith('sa_');
+        const userId = guid.replace('sa_', '').replace('user_', '');
+
+        if (startedUsers.has(userId)) {
+          console.log(`⚠️ Skipping duplicate WhatsApp session boot for user: ${userId} (guid: ${guid})`);
+          return;
+        }
+        startedUsers.add(userId);
+
+        const currentIndex = index++;
+        // Delay each boot by 4 seconds to prevent CPU overload
+        setTimeout(() => {
+          console.log(`🚀 Auto-resuming WhatsApp session: ${guid}`);
+          initWhatsApp(userId, isSuper);
+        }, currentIndex * 4000);
+      }
+    });
+  }
+
+  // 🛡️ 24/7 Keep-Alive Interval Daemon: Runs every 30 seconds
+  setInterval(() => {
+    if (fs.existsSync(authDir)) {
+      fs.readdirSync(authDir).forEach((dir) => {
+        if (dir.startsWith('session-')) {
+          const guid = dir.replace('session-', '');
+          const isSuper = guid.startsWith('sa_');
+          const userId = guid.replace('sa_', '').replace('user_', '');
+
+          const client = waClients.get(guid);
+          const status = waStatuses.get(guid);
+
+          // If no active client exists in waClients AND we are not currently trying to connect, scan QR, or logging out.
+          if (!client && status !== 'connecting' && status !== 'qr' && status !== 'logging_out') {
+            console.log(`🛡️ [Keep-Alive] Session folder exists for [${guid}] but client is missing or inactive. Status: ${status || 'none'}. Restoring...`);
+            initWhatsApp(userId, isSuper);
+          }
+        }
+      });
+    }
+  }, 30000);
+}
+bootstrap();
 
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => console.log(`🚀 Server on http://localhost:${PORT}`));

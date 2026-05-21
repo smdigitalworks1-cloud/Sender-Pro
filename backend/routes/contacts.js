@@ -1,44 +1,42 @@
 const express = require('express');
 const protect = require('../middleware/auth');
-const Contact = require('../models/Contact');
-const { Op, Sequelize } = require('sequelize');
+const { Contact } = require('../models');
 const router = express.Router();
 
 // GET all
 router.get('/', protect, async (req, res) => {
   const { group, search } = req.query;
-  const where = { userId: req.user.id };
-  if (group) where.group = group;
+  const query = { userId: req.user._id };
+  if (group) query.group = group;
   if (search) {
-    where[Op.or] = [
-      { name: { [Op.like]: `%${search}%` } },
-      { phone: { [Op.like]: `%${search}%` } },
+    query.$or = [
+      { name: { $regex: search, $options: 'i' } },
+      { phone: { $regex: search, $options: 'i' } },
     ];
   }
-  const contacts = await Contact.findAll({
-    where,
-    order: [['createdAt', 'DESC']]
-  });
+  const contacts = await Contact.find(query)
+    .sort({ createdAt: -1 });
   res.json(contacts);
 });
 
 // GET groups list
 router.get('/groups', protect, async (req, res) => {
-  const groups = await Contact.findAll({
-    attributes: [[Sequelize.fn('DISTINCT', Sequelize.col('group')), 'group']],
-    where: { userId: req.user.id }
-  });
-  res.json(groups.map(g => g.group));
+  try {
+    const groups = await Contact.distinct('group', { userId: req.user._id });
+    res.json(groups);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
 });
 
 // POST add one
 router.post('/', protect, async (req, res) => {
   try {
     const { name, phone, group, tags } = req.body;
-    const contact = await Contact.create({ userId: req.user.id, name, phone, group, tags });
+    const contact = await Contact.create({ userId: req.user._id, name, phone, group, tags });
     res.status(201).json(contact);
   } catch (e) {
-    if (e.name === 'SequelizeUniqueConstraintError') return res.status(400).json({ message: 'Contact already exists' });
+    if (e.code === 11000) return res.status(400).json({ message: 'Contact already exists' });
     res.status(500).json({ message: e.message });
   }
 });
@@ -49,45 +47,65 @@ router.post('/bulk', protect, async (req, res) => {
   const docs = contacts.map(c => ({
     ...c,
     group: c.group || group || 'Import',
-    userId: req.user.id,
+    userId: req.user._id,
     source: 'import',
   }));
   try {
-    const result = await Contact.bulkCreate(docs, { ignoreDuplicates: true });
+    // Mongoose insertMany with ordered: false mimics ignoreDuplicates to some extent
+    const result = await Contact.insertMany(docs, { ordered: false });
     res.status(201).json({ imported: result.length });
   } catch (e) {
+    // If some succeeded and some failed due to unique constraint, result might still have some data
+    if (e.insertedDocs) {
+        return res.status(201).json({ imported: e.insertedDocs.length });
+    }
     res.status(500).json({ message: e.message });
   }
 });
 
 // PUT update
 router.put('/:id', protect, async (req, res) => {
-  await Contact.update(req.body, { where: { id: req.params.id, userId: req.user.id } });
-  const contact = await Contact.findOne({ where: { id: req.params.id, userId: req.user.id } });
-  if (!contact) return res.status(404).json({ message: 'Not found' });
-  res.json(contact);
+  try {
+    const contact = await Contact.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user._id },
+      req.body,
+      { new: true }
+    );
+    if (!contact) return res.status(404).json({ message: 'Not found' });
+    res.json(contact);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
 });
 
 // DELETE one
 router.delete('/:id', protect, async (req, res) => {
-  await Contact.destroy({ where: { id: req.params.id, userId: req.user.id } });
-  res.json({ message: 'Deleted' });
+  try {
+    await Contact.deleteOne({ _id: req.params.id, userId: req.user._id });
+    res.json({ message: 'Deleted' });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
 });
 
 // DELETE many
 router.delete('/', protect, async (req, res) => {
-  const { ids } = req.body;
-  await Contact.destroy({ where: { id: ids, userId: req.user.id } });
-  res.json({ message: `Deleted ${ids.length}` });
+  try {
+    const { ids } = req.body;
+    await Contact.deleteMany({ _id: { $in: ids }, userId: req.user._id });
+    res.json({ message: `Deleted ${ids.length}` });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
 });
 
 // POST validate whatsapp status
 router.post('/validate', protect, async (req, res) => {
   const { ids } = req.body;
-  const client = req.app.get('getClientForUser')(req.user.id);
+  const client = req.app.get('getClientForUser')(req.user._id);
   if (!client) return res.status(400).json({ message: 'WhatsApp not connected' });
 
-  const contacts = await Contact.findAll({ where: { id: ids, userId: req.user.id } });
+  const contacts = await Contact.find({ _id: { $in: ids }, userId: req.user._id });
   const results = { valid: 0, invalid: 0 };
 
   for (const contact of contacts) {

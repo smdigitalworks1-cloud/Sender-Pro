@@ -5,16 +5,15 @@ const { MessageMedia } = require('whatsapp-web.js');
 
 const runAutomation = async (automationId, getClient) => {
     try {
-        const automation = await Automation.findByPk(automationId);
+        const automation = await Automation.findById(automationId);
         if (!automation || automation.status === 'paused') {
             console.log('Automation is paused or missing. Cannot start.');
             return;
         }
 
-        const steps = await AutomationStep.findAll({
-            where: { automationId },
-            order: [['stepOrder', 'ASC']]
-        });
+        const guid = automation.isSuper ? `sa_${automation.userId}` : `user_${automation.userId}`;
+
+        const steps = await AutomationStep.find({ automationId }).sort({ stepOrder: 1 });
         if (!steps.length) return;
 
         console.log(`🚀 Starting Automation: ${automation.name}`);
@@ -30,14 +29,18 @@ const runAutomation = async (automationId, getClient) => {
         }
 
         if (!Array.isArray(targetGroups)) targetGroups = [];
+        targetGroups = targetGroups
+            .map(g => typeof g === 'string' ? g.trim() : g)
+            .filter(g => typeof g === 'string' && g.endsWith('@g.us'));
 
         // Execute for each group in parallel or sequentially. We choose sequentially grouping for stability over WP.
         for (const groupId of targetGroups) {
             console.log(`Executing automation for group: ${groupId}`);
+            let skipNextStep = false;
 
             for (const step of steps) {
                 // Check if automation was paused midway
-                const checkStatus = await Automation.findByPk(automationId);
+                const checkStatus = await Automation.findById(automationId);
                 if (checkStatus.status === 'paused') {
                     console.log('Automation paused midway.');
                     return;
@@ -46,7 +49,35 @@ const runAutomation = async (automationId, getClient) => {
                 if (step.actionType === 'delay') {
                     let delayMs = 0;
 
-                    if (step.delayOption === 'exact_time' && step.delayUntilDate) {
+                    if (step.delayOption === 'event_time') {
+                        const baseEventTime = automation.eventTime || automation.scheduledAt || new Date();
+                        let offsetMs = 0;
+                        const offsetDays = Number(step.eventOffsetDays) || 0;
+                        const offsetHours = Number(step.eventOffsetHours) || 0;
+                        const offsetMinutes = Number(step.eventOffsetMinutes) || 0;
+
+                        offsetMs += offsetDays * 24 * 60 * 60 * 1000;
+                        offsetMs += offsetHours * 60 * 60 * 1000;
+                        offsetMs += offsetMinutes * 60 * 1000;
+
+                        let targetTime = new Date(baseEventTime);
+                        if (step.eventWhen === 'before') {
+                            targetTime = new Date(targetTime.getTime() - offsetMs);
+                        } else if (step.eventWhen === 'after') {
+                            targetTime = new Date(targetTime.getTime() + offsetMs);
+                        }
+
+                        delayMs = targetTime.getTime() - Date.now();
+                        console.log(`Calculated event_time wait step: base event=${new Date(baseEventTime).toLocaleString()}, when=${step.eventWhen}, offsets=${offsetDays}d ${offsetHours}h ${offsetMinutes}m. Target targetTime=${targetTime.toLocaleString()}. remaining delayMs=${delayMs}`);
+
+                        if (delayMs < 0) {
+                            if (step.pastAction === 'skip') {
+                                skipNextStep = true;
+                                console.log(`Wait step was in the past and pastAction='skip'. Flagging skipNextStep for group ${groupId}`);
+                            }
+                            delayMs = 0;
+                        }
+                    } else if (step.delayOption === 'exact_time' && step.delayUntilDate) {
                         delayMs = new Date(step.delayUntilDate).getTime() - Date.now();
                         if (delayMs < 0) delayMs = 0; // if time passed, don't wait
                         console.log(`Waiting until exact specific time: ${new Date(step.delayUntilDate).toLocaleString()}...`);
@@ -58,28 +89,80 @@ const runAutomation = async (automationId, getClient) => {
                         console.log(`Waiting for ${value} ${step.delayUnit || 'minutes'}...`);
                     }
 
-                    // Create pending log
-                    await AutomationLog.create({ automationId, groupId, stepId: step.id, status: 'success' });
+                    // Create pending log first so frontend shows "Waiting" status
+                    const scheduledNextAt = delayMs > 0 ? new Date(Date.now() + delayMs) : new Date();
+                    const delayLog = await AutomationLog.create({ 
+                        automationId, 
+                        groupId, 
+                        stepId: step._id, 
+                        status: 'pending',
+                        scheduledNextAt
+                    });
+                    
+                    if (global.emitToUser) {
+                        global.emitToUser(guid, 'automation:log_update', { automationId });
+                    }
+
                     if (delayMs > 0) {
                         await new Promise(resolve => setTimeout(resolve, delayMs));
                     }
+
+                    // Once finished, update status to success (Wait Finished)
+                    delayLog.status = 'success';
+                    delayLog.executedAt = new Date();
+                    await delayLog.save();
+
+                    if (global.emitToUser) {
+                        global.emitToUser(guid, 'automation:log_update', { automationId });
+                    }
                 }
                 else if (step.actionType === 'send_message') {
-                    // getClient here is a function passed from the router: req.app.get('whatsappClient')
-                    // WHICH ITSELF RETURNS A FUNCTION in server.js! So we need to call it again.
-                    // Wait, `req.app.get('whatsappClient')` returns `function getClient() { return waClient; }`
-                    // So getClient itself is that function. `const client = getClient();` should work. Let me check the whatsapp-web.js API.
+                    if (skipNextStep) {
+                        console.log(`Skipping message step ${step._id} because skipNextStep was set to true.`);
+                        skipNextStep = false;
+                        await AutomationLog.create({ 
+                            automationId, 
+                            groupId, 
+                            stepId: step._id, 
+                            status: 'success', 
+                            error: 'Skipped because wait step was in past' 
+                        });
+                        
+                        if (global.emitToUser) {
+                            global.emitToUser(guid, 'automation:log_update', { automationId });
+                        }
+                        continue;
+                    }
+
+                    // Create pending log for message step
+                    const msgLog = await AutomationLog.create({ 
+                        automationId, 
+                        groupId, 
+                        stepId: step._id, 
+                        status: 'pending' 
+                    });
+                    
+                    if (global.emitToUser) {
+                        global.emitToUser(guid, 'automation:log_update', { automationId });
+                    }
 
                     let client;
                     if (typeof getClient === 'function') {
                         client = getClient();
                     } else {
-                        client = getClient; // fallback if it's the direct object
+                        client = getClient;
                     }
 
-                    if (!client) {
+                    if (!client || !client.info) {
                         console.error('WhatsApp client not ready for automation.');
-                        await AutomationLog.create({ automationId, groupId, stepId: step.id, status: 'failed', error: 'WhatsApp disconnected' });
+                        msgLog.status = 'failed';
+                        msgLog.error = 'WhatsApp disconnected';
+                        msgLog.executedAt = new Date();
+                        await msgLog.save();
+                        
+                        if (global.emitToUser) {
+                            global.emitToUser(guid, 'automation:log_update', { automationId });
+                        }
                         continue;
                     }
 
@@ -97,15 +180,28 @@ const runAutomation = async (automationId, getClient) => {
                         }
 
                         // Success log
-                        await AutomationLog.create({ automationId, groupId, stepId: step.id, status: 'success' });
+                        msgLog.status = 'success';
+                        msgLog.executedAt = new Date();
+                        await msgLog.save();
                         console.log(`Message sent to ${groupId}`);
+
+                        if (global.emitToUser) {
+                            global.emitToUser(guid, 'automation:log_update', { automationId });
+                        }
 
                         // small delay between WP messages to avoid spam blocks
                         await new Promise(resolve => setTimeout(resolve, 3000));
 
                     } catch (err) {
                         console.error(`Failed to send message: ${err.message}`);
-                        await AutomationLog.create({ automationId, groupId, stepId: step.id, status: 'failed', error: err.message });
+                        msgLog.status = 'failed';
+                        msgLog.error = err.message;
+                        msgLog.executedAt = new Date();
+                        await msgLog.save();
+                        
+                        if (global.emitToUser) {
+                            global.emitToUser(guid, 'automation:log_update', { automationId });
+                        }
                     }
                 }
             } // end step loop
@@ -118,6 +214,10 @@ const runAutomation = async (automationId, getClient) => {
         automation.lastRunAt = new Date();
         await automation.save();
         console.log(`✅ Automation completed: ${automation.name}`);
+
+        if (global.emitToUser) {
+            global.emitToUser(guid, 'automation:log_update', { automationId });
+        }
 
     } catch (error) {
         console.error(`Automation Engine Error: ${error.message}`);

@@ -9,10 +9,10 @@ module.exports = async (req, res, next) => {
   try {
     const decoded = jwt.verify(auth.split(' ')[1], process.env.JWT_SECRET);
     if (decoded.role === 'superadmin') {
-      req.user = await SuperAdmin.findByPk(decoded.id, { attributes: { exclude: ['password'] } });
+      req.user = await SuperAdmin.findById(decoded.id).select('-password');
       if (req.user) req.user.role = 'superadmin';
     } else {
-      req.user = await User.findByPk(decoded.id, { attributes: { exclude: ['password'] } });
+      req.user = await User.findById(decoded.id).select('-password');
       if (req.user) {
         // Use the DB role column if set, otherwise fall back to legacy isAdmin check
         if (!req.user.role || req.user.role === 'user') {

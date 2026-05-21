@@ -1,10 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const protect = require('../middleware/auth');
-const Project = require('../models/Project');
-const Automation = require('../models/Automation');
-const AutomationStep = require('../models/AutomationStep');
-const AutomationLog = require('../models/AutomationLog');
+const { Project, Automation, AutomationStep, AutomationLog } = require('../models');
 const { runAutomation } = require('../utils/automationEngine');
 
 // ========================
@@ -14,10 +11,8 @@ const { runAutomation } = require('../utils/automationEngine');
 // Get all projects for user
 router.get('/projects', protect, async (req, res) => {
     try {
-        const projects = await Project.findAll({
-            where: { userId: req.user.id },
-            order: [['createdAt', 'DESC']]
-        });
+        const projects = await Project.find({ userId: req.user._id })
+            .sort({ createdAt: -1 });
         res.json(projects);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -28,7 +23,7 @@ router.get('/projects', protect, async (req, res) => {
 router.post('/projects', protect, async (req, res) => {
     try {
         const { name, description } = req.body;
-        const project = await Project.create({ userId: req.user.id, name, description });
+        const project = await Project.create({ userId: req.user._id, name, description });
         res.json(project);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -42,18 +37,15 @@ router.post('/projects', protect, async (req, res) => {
 // Get automations by project
 router.get('/projects/:projectId/automations', protect, async (req, res) => {
     try {
-        const automations = await Automation.findAll({
-            where: { projectId: req.params.projectId, userId: req.user.id },
-            order: [['createdAt', 'DESC']]
-        });
+        const automations = await Automation.find({ projectId: req.params.projectId, userId: req.user._id })
+            .sort({ createdAt: -1 });
+        
+        // In Mongoose, targetGroups is already an array in our schema, 
+        // but we'll ensure it just in case of legacy data or inconsistencies.
         const parsedAutomations = automations.map(a => {
-            const autoJson = a.toJSON();
-            if (typeof autoJson.targetGroups === 'string') {
-                try { autoJson.targetGroups = JSON.parse(autoJson.targetGroups); }
-                catch { autoJson.targetGroups = []; }
-            }
-            if (!Array.isArray(autoJson.targetGroups)) autoJson.targetGroups = [];
-            return autoJson;
+            const autoObj = a.toObject();
+            if (!Array.isArray(autoObj.targetGroups)) autoObj.targetGroups = [];
+            return autoObj;
         });
         res.json(parsedAutomations);
     } catch (err) {
@@ -66,7 +58,7 @@ router.post('/projects/:projectId/automations', protect, async (req, res) => {
     try {
         const { name, triggerType, scheduledAt, targetGroups } = req.body;
         const automation = await Automation.create({
-            userId: req.user.id,
+            userId: req.user._id,
             isSuper: req.user.role === 'superadmin',
             projectId: req.params.projectId,
             name,
@@ -83,21 +75,16 @@ router.post('/projects/:projectId/automations', protect, async (req, res) => {
 // Get single automation details (with steps)
 router.get('/:id', protect, async (req, res) => {
     try {
-        const automation = await Automation.findOne({ where: { id: req.params.id, userId: req.user.id } });
+        const automation = await Automation.findOne({ _id: req.params.id, userId: req.user._id });
         if (!automation) return res.status(404).json({ error: 'Not found' });
 
-        const steps = await AutomationStep.findAll({
-            where: { automationId: automation.id },
-            order: [['stepOrder', 'ASC']]
-        });
-        const autoJson = automation.toJSON();
-        if (typeof autoJson.targetGroups === 'string') {
-            try { autoJson.targetGroups = JSON.parse(autoJson.targetGroups); }
-            catch { autoJson.targetGroups = []; }
-        }
-        if (!Array.isArray(autoJson.targetGroups)) autoJson.targetGroups = [];
+        const steps = await AutomationStep.find({ automationId: automation._id })
+            .sort({ stepOrder: 1 });
+            
+        const autoObj = automation.toObject();
+        if (!Array.isArray(autoObj.targetGroups)) autoObj.targetGroups = [];
 
-        res.json({ ...autoJson, steps });
+        res.json({ ...autoObj, steps });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -110,22 +97,35 @@ router.post('/:id/steps', protect, async (req, res) => {
         const automationId = req.params.id;
 
         // Verify automation belongs to user
-        const automation = await Automation.findOne({ where: { id: automationId, userId: req.user.id } });
+        const automation = await Automation.findOne({ _id: automationId, userId: req.user._id });
         if (!automation) return res.status(404).json({ error: 'Automation not found' });
 
         // Delete existing steps and recreate for simplicity (or update them)
-        await AutomationStep.destroy({ where: { automationId } });
+        await AutomationStep.deleteMany({ automationId });
 
         const cleanSteps = steps.map((s, idx) => {
             const stepData = { ...s, automationId, stepOrder: idx + 1 };
-            if (!stepData.delayUntilDate) delete stepData.delayUntilDate;
+            delete stepData._id;
+            delete stepData.id;
+            
+            if (!stepData.delayUntilDate || stepData.delayUntilDate === '' || stepData.delayUntilDate === 'null') {
+                delete stepData.delayUntilDate;
+            } else {
+                const dateObj = new Date(stepData.delayUntilDate);
+                if (isNaN(dateObj.getTime())) {
+                    delete stepData.delayUntilDate;
+                } else {
+                    stepData.delayUntilDate = dateObj;
+                }
+            }
             return stepData;
         });
 
-        const createdSteps = await AutomationStep.bulkCreate(cleanSteps);
+        const createdSteps = await AutomationStep.insertMany(cleanSteps);
 
         res.json(createdSteps);
     } catch (err) {
+        console.error("Error saving steps:", err);
         res.status(500).json({ error: err.message });
     }
 });
@@ -134,13 +134,14 @@ router.post('/:id/steps', protect, async (req, res) => {
 router.patch('/:id/groups', protect, async (req, res) => {
     try {
         const { targetGroups } = req.body;
-        await Automation.update(
+        const automation = await Automation.findOneAndUpdate(
+            { _id: req.params.id, userId: req.user._id },
             { targetGroups },
-            { where: { id: req.params.id, userId: req.user.id } }
+            { new: true }
         );
-        const automation = await Automation.findOne({ where: { id: req.params.id, userId: req.user.id } });
         res.json(automation);
     } catch (err) {
+        console.error("Error saving groups:", err);
         res.status(500).json({ error: err.message });
     }
 });
@@ -148,7 +149,7 @@ router.patch('/:id/groups', protect, async (req, res) => {
 // Run Manual Trigger
 router.post('/:id/run', protect, async (req, res) => {
     try {
-        const automation = await Automation.findOne({ where: { id: req.params.id, userId: req.user.id } });
+        const automation = await Automation.findOne({ _id: req.params.id, userId: req.user._id });
         if (!automation) return res.status(404).json({ error: 'Automation not found' });
 
         automation.status = 'active';
@@ -158,10 +159,10 @@ router.post('/:id/run', protect, async (req, res) => {
             res.json({ message: 'Automation activated & scheduled for later', automation });
         } else {
             // Non-blocking trigger
-            const client = req.app.get('getClientForUser')(req.user.id, automation.isSuper);
-            if (!client) return res.status(400).json({ error: 'WhatsApp not connected. Please connect your WhatsApp first.' });
+            const client = req.app.get('getClientForUser')(req.user._id, automation.isSuper);
+            if (!client || !client.info) return res.status(400).json({ error: 'WhatsApp not connected. Please connect your WhatsApp first.' });
 
-            runAutomation(automation.id, client).catch(err => console.error(err));
+            runAutomation(automation._id, client).catch(err => console.error(err));
             res.json({ message: 'Automation Started Now', automation });
         }
     } catch (err) {
@@ -173,30 +174,64 @@ router.post('/:id/run', protect, async (req, res) => {
 router.patch('/:id/status', protect, async (req, res) => {
     try {
         const { status } = req.body; // 'active', 'paused'
-        await Automation.update(
+        const automation = await Automation.findOneAndUpdate(
+            { _id: req.params.id, userId: req.user._id },
             { status },
-            { where: { id: req.params.id, userId: req.user.id } }
+            { new: true }
         );
-        const automation = await Automation.findOne({ where: { id: req.params.id, userId: req.user.id } });
         res.json(automation);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// Update Trigger settings
 router.patch('/:id/trigger', protect, async (req, res) => {
     try {
-        const { triggerType, scheduledAt } = req.body;
+        const { triggerType, scheduledAt, eventTime } = req.body;
         const updateData = { triggerType };
-        updateData.scheduledAt = scheduledAt ? scheduledAt : null;
+        
+        // Robustly parse and validate scheduledAt
+        if (scheduledAt && scheduledAt !== 'null' && scheduledAt !== 'undefined') {
+            const dateObj = new Date(scheduledAt);
+            updateData.scheduledAt = isNaN(dateObj.getTime()) ? null : dateObj;
+        } else {
+            updateData.scheduledAt = null;
+        }
 
-        await Automation.update(
+        // Robustly parse and validate eventTime
+        if (eventTime && eventTime !== 'null' && eventTime !== 'undefined') {
+            const dateObj = new Date(eventTime);
+            updateData.eventTime = isNaN(dateObj.getTime()) ? null : dateObj;
+        } else {
+            updateData.eventTime = null;
+        }
+
+        const automation = await Automation.findOneAndUpdate(
+            { _id: req.params.id, userId: req.user._id },
             updateData,
-            { where: { id: req.params.id, userId: req.user.id } }
+            { new: true }
         );
-        const automation = await Automation.findOne({ where: { id: req.params.id, userId: req.user.id } });
         res.json(automation);
+    } catch (err) {
+        console.error("Error patching trigger settings:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get automation logs & steps
+router.get('/:id/logs', protect, async (req, res) => {
+    try {
+        const automation = await Automation.findOne({ _id: req.params.id, userId: req.user._id });
+        if (!automation) return res.status(404).json({ error: 'Automation not found' });
+
+        const steps = await AutomationStep.find({ automationId: automation._id }).sort({ stepOrder: 1 });
+        const logs = await AutomationLog.find({ automationId: automation._id }).sort({ executedAt: -1 });
+
+        res.json({
+            automation,
+            steps,
+            logs
+        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

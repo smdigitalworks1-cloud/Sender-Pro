@@ -54,7 +54,7 @@ function EditModal({ user, onClose, onSave, isSuperAdmin, admins }) {
 
     const handleSave = async () => {
         setLoading(true);
-        await onSave(user.id, form);
+        await onSave(user.id || user._id, form);
         setLoading(false);
     };
 
@@ -85,38 +85,7 @@ function EditModal({ user, onClose, onSave, isSuperAdmin, admins }) {
                     </div>
                 )}
 
-                {/* Role & Parent (Super Admin only) */}
-                {isSuperAdmin && (
-                    <>
-                        <div style={{ marginBottom: 20, padding: 16, borderRadius: 12, background: '#27272a', border: '1px solid #3f3f46' }}>
-                            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text3)', marginBottom: 12, letterSpacing: '0.05em' }}>ROLE</div>
-                            <div style={{ display: 'flex', gap: 10 }}>
-                                {[{ val: false, label: '👤 User', color: '#94a3b8' }, { val: true, label: '👨‍💼 Admin', color: '#f59e0b' }].map(opt => (
-                                    <button key={String(opt.val)} onClick={() => setForm(f => ({ ...f, isAdmin: opt.val }))}
-                                        style={{
-                                            flex: 1, padding: '10px 0', borderRadius: 10, border: `2px solid ${form.isAdmin === opt.val ? opt.color : '#3f3f46'}`,
-                                            background: form.isAdmin === opt.val ? `${opt.color}22` : 'transparent',
-                                            color: form.isAdmin === opt.val ? opt.color : 'var(--text3)',
-                                            cursor: 'pointer', fontWeight: 700, fontSize: 14, transition: 'all 0.15s'
-                                        }}>
-                                        {opt.label}
-                                    </button>
-                                ))}
-                            </div>
-                        </div>
-
-                        <div style={{ marginBottom: 20, padding: 16, borderRadius: 12, background: '#27272a', border: '1px solid #3f3f46' }}>
-                            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text3)', marginBottom: 12, letterSpacing: '0.05em' }}>PARENT ADMIN</div>
-                            <select value={form.parentId || ''} onChange={e => setForm(f => ({ ...f, parentId: e.target.value || null }))}
-                                style={{ width: '100%', padding: '10px 12px', borderRadius: 8, background: '#18181b', border: '1px solid #3f3f46', color: '#fff', outline: 'none', fontSize: 14 }}>
-                                <option value="">None (Top-level)</option>
-                                {admins?.filter(a => a.isAdmin && a.id !== user.id).map(a => (
-                                    <option key={a.id} value={a.id}>{a.name} ({a.email})</option>
-                                ))}
-                            </select>
-                        </div>
-                    </>
-                )}
+                {/* Role selection removed - All managed users are standard Users */}
 
                 {/* Subscription Status */}
                 <div style={{ marginBottom: 20, padding: 16, borderRadius: 12, background: '#27272a', border: '1px solid #3f3f46' }}>
@@ -142,11 +111,10 @@ function EditModal({ user, onClose, onSave, isSuperAdmin, admins }) {
                 {/* Subscription Plan Selector */}
                 <div style={{ marginBottom: 20, padding: 16, borderRadius: 12, background: '#27272a', border: '1px solid #3f3f46' }}>
                     <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text3)', marginBottom: 12, letterSpacing: '0.05em' }}>SUBSCRIPTION PLAN</div>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                         {[
                             { label: '📅 Monthly', days: 30, duration: 'monthly' },
                             { label: '🗓️ Quarterly', days: 90, duration: 'quarterly' },
-                            { label: '📆 Yearly', days: 365, duration: 'yearly' },
                         ].map(plan => {
                             const isSelected = form.selectedPlan === plan.duration;
                             return (
@@ -176,7 +144,7 @@ function EditModal({ user, onClose, onSave, isSuperAdmin, admins }) {
                     <input type="date" value={form.subExpiry} onChange={e => setForm(f => ({ ...f, subExpiry: e.target.value }))}
                         style={{ width: '100%', padding: '10px 12px', borderRadius: 8, background: '#18181b', border: '1px solid #3f3f46', color: '#fff', outline: 'none', fontSize: 14, boxSizing: 'border-box' }} />
                     <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
-                        {[{ label: '7 Days', days: 7 }, { label: '30 Days', days: 30 }, { label: '90 Days', days: 90 }, { label: '1 Year', days: 365 }].map(p => (
+                        {[{ label: '7 Days', days: 7 }, { label: '30 Days', days: 30 }, { label: '90 Days', days: 90 }].map(p => (
                             <button key={p.days} onClick={() => quickExpiry(p.days)}
                                 style={{ padding: '5px 12px', borderRadius: 8, background: '#3f3f46', border: 'none', color: 'var(--text2)', fontSize: 12, cursor: 'pointer', fontWeight: 600 }}>
                                 +{p.label}
@@ -276,7 +244,7 @@ function AddModal({ onClose, onCreated, isSuperAdmin, admins }) {
                         </div>
                         {/* Expiry quick-set */}
                         <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
-                            {[7, 30, 90, 365].map(d => (
+                            {[7, 30, 90].map(d => (
                                 <button type="button" key={d} onClick={() => quickExpiry(d)}
                                     style={{ padding: '4px 10px', borderRadius: 8, background: '#3f3f46', border: 'none', color: 'var(--text2)', fontSize: 11, cursor: 'pointer', fontWeight: 600 }}>
                                     +{d}d
@@ -286,40 +254,7 @@ function AddModal({ onClose, onCreated, isSuperAdmin, admins }) {
                         {form.subExpiry && <div style={{ marginTop: 8, fontSize: 12, color: '#22c55e' }}>Expires: {new Date(form.subExpiry).toLocaleDateString()}</div>}
                     </div>
 
-                    {/* Role toggle (Super Admin only) */}
-                    {isSuperAdmin && (
-                        <>
-                            <div style={{ padding: 14, borderRadius: 12, background: '#27272a', border: '1px solid #3f3f46' }}>
-                                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text3)', marginBottom: 10 }}>ROLE</div>
-                                <div style={{ display: 'flex', gap: 8 }}>
-                                    {[{ val: false, label: '👤 User' }, { val: true, label: '👨‍💼 Admin' }].map(opt => (
-                                        <button type="button" key={String(opt.val)} onClick={() => setForm(f => ({ ...f, isAdmin: opt.val }))}
-                                            style={{
-                                                flex: 1, padding: '8px 0', borderRadius: 8,
-                                                border: `2px solid ${form.isAdmin === opt.val ? (opt.val ? '#f59e0b' : '#7c3aed') : '#3f3f46'}`,
-                                                background: form.isAdmin === opt.val ? (opt.val ? '#f59e0b22' : '#7c3aed22') : 'transparent',
-                                                color: form.isAdmin === opt.val ? (opt.val ? '#f59e0b' : '#c084fc') : 'var(--text3)',
-                                                cursor: 'pointer', fontWeight: 700, fontSize: 13
-                                            }}>
-                                            {opt.label}
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
-
-                            {/* Parent Admin Selection (Super Admin only) */}
-                            <div style={{ padding: 14, borderRadius: 12, background: '#27272a', border: '1px solid #3f3f46' }}>
-                                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text3)', marginBottom: 10 }}>PARENT ADMIN (OPTIONAL)</div>
-                                <select value={form.parentId || ''} onChange={e => setForm(f => ({ ...f, parentId: e.target.value || null }))}
-                                    style={{ width: '100%', padding: '10px 12px', borderRadius: 8, background: '#18181b', border: '1px solid #3f3f46', color: '#fff', outline: 'none', fontSize: 14 }}>
-                                    <option value="">None (Top-level)</option>
-                                    {admins?.filter(a => a.isAdmin).map(a => (
-                                        <option key={a.id} value={a.id}>{a.name} ({a.email})</option>
-                                    ))}
-                                </select>
-                            </div>
-                        </>
-                    )}
+                    {/* Role toggle and parent admin selection removed */}
 
                     <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
                         <button type="submit" disabled={loading} className="btn btn-primary" style={{ flex: 1 }}>
@@ -371,8 +306,16 @@ export default function AdminPage() {
             const pData = await pRes.json();
 
             if (!sData.message) setStats(sData);
-            if (Array.isArray(uData)) setUsers(uData);
-            if (Array.isArray(pData)) setPayments(pData);
+            if (Array.isArray(uData)) {
+                setUsers(uData.map(u => ({ ...u, id: u.id || u._id })));
+            }
+            if (Array.isArray(pData)) {
+                setPayments(pData.map(p => ({
+                    ...p,
+                    id: p.id || p._id,
+                    User: p.userId || p.User
+                })));
+            }
 
             if (tid) toast.success('Data updated! ✨', { id: tid });
         } catch (e) {
@@ -399,7 +342,8 @@ export default function AdminPage() {
             const res = await fetch(`${API}/api/admin/users/${id}`, { method: 'PATCH', headers, body: JSON.stringify(form) });
             const data = await res.json();
             if (!res.ok) throw new Error(data.message);
-            setUsers(u => u.map(x => x.id === id ? { ...x, ...data } : x));
+            const updatedUser = { ...data, id: data.id || data._id };
+            setUsers(u => u.map(x => (x.id === id || x._id === id) ? updatedUser : x));
             setEditUser(null);
             toast.success('User updated! ✅');
             fetchAll();
@@ -411,7 +355,7 @@ export default function AdminPage() {
         try {
             const res = await fetch(`${API}/api/admin/users/${id}`, { method: 'DELETE', headers });
             if (!res.ok) { const d = await res.json(); throw new Error(d.message); }
-            setUsers(u => u.filter(x => x.id !== id));
+            setUsers(u => u.filter(x => x.id !== id && x._id !== id));
             toast.success('User deleted');
             fetchAll();
         } catch (e) { toast.error(e.message); }
@@ -435,14 +379,14 @@ export default function AdminPage() {
         if (filtered.length === 0) return toast.error('No data to export');
         const headers = ['ID', 'Name', 'Email', 'WhatsApp', 'Role', 'Status', 'Expiry', 'Managed By'];
         const rows = filtered.map(u => [
-            u.id,
+            u.id || u._id,
             u.name || '',
             u.email || '',
             u.whatsappNumber || '',
-            u.isAdmin ? 'Admin' : (u.parentId ? 'Sub Account' : 'User'),
+            u.isAdmin ? 'Admin' : 'User',
             u.subStatus || 'none',
             u.subExpiry ? new Date(u.subExpiry).toLocaleDateString() : '',
-            u.parentAdmin ? `${u.parentAdmin.name} (${u.parentAdmin.email})` : 'Super Admin',
+            'Super Admin',
         ]);
         const csvContent = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
         const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -480,7 +424,6 @@ export default function AdminPage() {
                 <StatCard icon={<Users size={24} />} label="Total Registered" value={stats?.totalUsers || 0} color="#7c3aed" onClick={() => { setFilterType('all'); setTab('users'); }} />
                 {isSuperAdmin && <StatCard icon={<ShieldCheck size={24} />} label="Admins" value={users.filter(u => u.isAdmin).length || 0} color="#f59e0b" onClick={() => { setFilterType('admins'); setTab('users'); }} />}
                 <StatCard icon={<UserCheck size={24} />} label="Users" value={stats?.regularUserCount || 0} color="#22c55e" onClick={() => { setFilterType('users'); setTab('users'); }} />
-                <StatCard icon={<Crown size={24} />} label="Sub Accounts" value={stats?.subAccountCount || 0} color="#06b6d4" onClick={() => { setFilterType('subaccounts'); setTab('users'); }} />
                 <StatCard icon={<TrendingUp size={24} />} label="Trial Users" value={stats?.trialUsers || 0} color="#eab308" onClick={() => { setFilterType('trial'); setTab('users'); }} />
 
                 {isSuperAdmin && (
@@ -517,13 +460,10 @@ export default function AdminPage() {
                                 ⬇ Export CSV
                             </button>
                         </div>
-                        {/* Row 2: Role filter chips */}
+                        {/* Row 2: Role filter chips (simplified to show all, active, trial) */}
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                             {[
                                 { key: 'all', label: '🌐 All', color: '#7c3aed', show: true },
-                                { key: 'admins', label: '👑 Admin', color: '#f59e0b', show: isSuperAdmin },
-                                { key: 'users', label: '👤 User', color: '#22c55e', show: isSuperAdmin },
-                                { key: 'subaccounts', label: '🔗 Sub Account', color: '#06b6d4', show: true },
                                 { key: 'active', label: '✅ Active', color: '#22c55e', show: true },
                                 { key: 'trial', label: '⏳ Trial', color: '#eab308', show: true },
                             ].filter(f => f.show).map(f => (
@@ -557,14 +497,13 @@ export default function AdminPage() {
                                 {filtered.map(u => {
                                     const badge = STATUS_BADGE[u.subStatus] || STATUS_BADGE.none;
                                     return (
-                                        <tr key={u.id} style={{ borderBottom: '1px solid var(--border)', transition: 'background 0.12s' }}
+                                        <tr key={u.id || u._id} style={{ borderBottom: '1px solid var(--border)', transition: 'background 0.12s' }}
                                             onMouseEnter={e => e.currentTarget.style.background = 'var(--bg2)'}
                                             onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
 
                                             {/* Name */}
                                             <td style={{ padding: '13px 16px' }}>
                                                 <div style={{ fontWeight: 700, fontSize: 14 }}>{u.name}</div>
-                                                {u.parentId && <div style={{ fontSize: 10, color: '#f59e0b', marginTop: 2 }}>Sub-account</div>}
                                             </td>
 
                                             {/* Role badge */}
@@ -622,7 +561,7 @@ export default function AdminPage() {
                                                     </button>
                                                     {(isSuperAdmin || (isAdmin && u.parentId === me.id)) && (
                                                         <button className="btn btn-danger" style={{ padding: '5px 10px', fontSize: 12 }}
-                                                            onClick={() => handleDelete(u.id, u.name)}>
+                                                            onClick={() => handleDelete(u.id || u._id, u.name)}>
                                                             <Trash2 size={12} />
                                                         </button>
                                                     )}
@@ -764,18 +703,8 @@ function PlansPricingSection({ token }) {
     const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
 
     const defaultPlans = [
-        // Admin Plans
-        { id: 'admin_monthly', label: 'Admin Monthly', type: 'admin', amountInRupees: 999, days: 30, features: ['Unlimited Campaigns', 'Up to 5 Sub Accounts', 'Group Messaging', 'Auto Reply', 'Priority Support'] },
-        { id: 'admin_quarterly', label: 'Admin Quarterly', type: 'admin', amountInRupees: 2599, days: 90, features: ['Unlimited Campaigns', 'Up to 5 Sub Accounts', 'Group Messaging', 'Auto Reply', 'Priority Support'] },
-        { id: 'admin_yearly', label: 'Admin Yearly', type: 'admin', amountInRupees: 8999, days: 365, features: ['Unlimited Campaigns', 'Up to 5 Sub Accounts', 'Group Messaging', 'Auto Reply', 'Priority Support', 'Dedicated Manager'] },
-        // User Plans
-        { id: 'user_monthly', label: 'User Monthly', type: 'user', amountInRupees: 499, days: 30, features: ['Unlimited Campaigns', 'Group Messaging', 'Auto Reply', 'Basic Support'] },
-        { id: 'user_quarterly', label: 'User Quarterly', type: 'user', amountInRupees: 1299, days: 90, features: ['Unlimited Campaigns', 'Group Messaging', 'Auto Reply', 'Basic Support'] },
-        { id: 'user_yearly', label: 'User Yearly', type: 'user', amountInRupees: 4499, days: 365, features: ['Unlimited Campaigns', 'Group Messaging', 'Auto Reply', 'Priority Support'] },
-        // Sub Account (Free)
-        { id: 'subaccount_monthly', label: 'Sub Account Monthly', type: 'subaccount', amountInRupees: 0, days: 30, features: ['Bulk Campaigns', 'Group Messaging', 'Auto Reply', 'Contact Management'] },
-        { id: 'subaccount_quarterly', label: 'Sub Account Quarterly', type: 'subaccount', amountInRupees: 0, days: 90, features: ['Bulk Campaigns', 'Group Messaging', 'Auto Reply', 'Reporting Tools'] },
-        { id: 'subaccount_yearly', label: 'Sub Account Yearly', type: 'subaccount', amountInRupees: 0, days: 365, features: ['All Sub Account Features', 'No Message Limits', 'Premium Support'] },
+        { id: 'user_monthly', label: 'User Monthly', type: 'user', amountInRupees: 6, days: 30, features: ['Unlimited WhatsApp Sending', 'Group Messaging', 'Auto Reply', 'Group Member Grabber', 'Advance Campaign Scheduling', 'Premium Priority Support'] },
+        { id: 'user_quarterly', label: 'User Quarterly', type: 'user', amountInRupees: 1299, days: 90, features: ['Unlimited WhatsApp Sending', 'Group Messaging', 'Auto Reply', 'Group Member Grabber', 'Advance Campaign Scheduling', 'Premium Priority Support'] }
     ];
 
     const [plans, setPlans] = useState(defaultPlans);
@@ -817,7 +746,7 @@ function PlansPricingSection({ token }) {
     };
 
     const handleSyncAllPlans = async () => {
-        if (!window.confirm("This will upload all 9 plan configurations to the backend. Continue?")) return;
+        if (!window.confirm("This will upload plan configurations to the backend. Continue?")) return;
         setSyncing(true);
         try {
             for (const p of plans) {
@@ -844,8 +773,8 @@ function PlansPricingSection({ token }) {
     };
     const removeFeature = (planId, idx) => setPlans(prev => prev.map(p => p.id === planId ? { ...p, features: p.features.filter((_, i) => i !== idx) } : p));
 
-    const PLAN_COLORS = { admin: '#f59e0b', user: '#7c3aed', subaccount: '#22c55e' };
-    const PLAN_ICONS = { admin: '👑', user: '👤', subaccount: '🔗' };
+    const PLAN_COLORS = { admin: '#f59e0b', user: '#7c3aed' };
+    const PLAN_ICONS = { admin: '👑', user: '👤' };
 
     if (loading) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--text3)' }}>Loading plans...</div>;
 
@@ -929,7 +858,7 @@ function SettingsSection() {
     const [savingPlan, setSavingPlan] = useState(null);
 
     // Limits form
-    const [limits, setLimits] = useState({ maxSubAccountsPerAdmin: 5, trialDays: 7, maxCampaignsPerUser: 100 });
+    const [limits, setLimits] = useState({ trialDays: 7 });
     const [limitsLoading, setLimitsLoading] = useState(true);
     const [savingLimits, setSavingLimits] = useState(false);
 
@@ -1009,16 +938,14 @@ function SettingsSection() {
                     <Users size={18} style={{ color: '#7c3aed' }} /> Account Limits
                 </h3>
                 <p style={{ fontSize: 13, color: 'var(--text3)', marginTop: 0, marginBottom: 20 }}>
-                    Control how many sub-accounts each Admin can create and other system limits.
+                    Control free trial period and other system limits.
                 </p>
                 {limitsLoading ? (
                     <div style={{ textAlign: 'center', padding: 20, color: 'var(--text3)' }}>Loading...</div>
                 ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
                         {[
-                            { key: 'maxSubAccountsPerAdmin', label: 'Max Sub-Accounts per Admin', icon: '👤', desc: 'How many sub-accounts each Admin is allowed to create' },
                             { key: 'trialDays', label: 'Trial Period (Days)', icon: '⏳', desc: 'Free trial days for new user registrations' },
-                            { key: 'maxCampaignsPerUser', label: 'Max Campaigns per User', icon: '📣', desc: 'Maximum campaigns a user can create' },
                         ].map(item => (
                             <div key={item.key} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 10, background: '#27272a', border: '1px solid #3f3f46' }}>
                                 <span style={{ fontSize: 20 }}>{item.icon}</span>

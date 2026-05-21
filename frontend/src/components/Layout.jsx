@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useWhatsApp } from '../hooks/useWhatsApp';
 import SubscriptionPopup from './SubscriptionPopup';
 import {
   LayoutDashboard, MessageSquare, Users, Users2,
@@ -27,21 +28,47 @@ const nav = [
   { to: '/support', icon: HeadphonesIcon, label: 'Helpdesk Support' },
 ];
 
-// Pages accessible WITHOUT subscription (only dashboard + pricing + profile + support)
-const FREE_PAGES = ['/dashboard', '/pricing', '/profile', '/support'];
+// Pages accessible WITHOUT subscription (only pricing + profile + support)
+const FREE_PAGES = ['/pricing', '/profile', '/support'];
 
 export default function Layout() {
   const { user, logout, isSubscribed } = useAuth();
+  const { status, phone } = useWhatsApp();
   const navigate = useNavigate();
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
 
-  // Bypass subscription requirement for superadmins and admins
-  const needsSubscription = 
-    user?.role !== 'superadmin' && 
-    user?.role !== 'admin' && 
+  const getWaBadge = () => {
+    if (status === 'connected') {
+      const displayPhone = phone || user?.whatsappNumber;
+      return {
+        bg: 'rgba(34, 197, 94, 0.15)',
+        color: '#22c55e',
+        text: displayPhone ? `+${displayPhone}` : 'Connected'
+      };
+    }
+    if (status === 'connecting' || status === 'qr') {
+      return {
+        bg: 'rgba(234, 179, 8, 0.15)',
+        color: '#eab308',
+        text: status === 'qr' ? 'Scan QR' : 'Connecting...'
+      };
+    }
+    return {
+      bg: 'rgba(239, 68, 68, 0.15)',
+      color: '#ef4444',
+      text: 'Not Connected'
+    };
+  };
+
+  const waBadge = getWaBadge();
+
+  // Enforce subscription gate for standard users (non-admins) who are not subscribed
+  const needsSubscription =
+    user?.role !== 'superadmin' &&
+    user?.role !== 'admin' &&
     !user?.isAdmin &&
-    !isSubscribed && 
+    !isSubscribed &&
     !FREE_PAGES.some(p => location.pathname.startsWith(p));
 
   const handleLogout = () => { logout(); navigate('/login'); };
@@ -70,7 +97,13 @@ export default function Layout() {
 
         {/* Nav */}
         <nav style={{ flex: 1, padding: '14px 10px', overflowY: 'auto' }}>
-          {nav.filter(item => !(user?.role === 'subaccount' && item.to === '/pricing')).map((item, i) => {
+          {nav.filter(item => {
+            // Hide pricing/subscription tab from subaccounts only
+            if (item.to === '/pricing') {
+              return user?.role !== 'subaccount';
+            }
+            return true;
+          }).map((item, i) => {
             if (item.isDivider) {
               return !collapsed ? (
                 <div key={i} style={{ fontSize: 11, fontWeight: 700, color: 'var(--text3)', marginTop: 15, marginBottom: 5, paddingLeft: 14, letterSpacing: '0.05em' }}>
@@ -140,12 +173,12 @@ export default function Layout() {
               <div style={{
                 display: 'inline-flex', alignItems: 'center', gap: 6,
                 padding: '4px 8px', borderRadius: 20,
-                background: user?.whatsappNumber ? 'rgba(34, 197, 94, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-                color: user?.whatsappNumber ? '#22c55e' : '#ef4444',
+                background: waBadge.bg,
+                color: waBadge.color,
                 fontSize: 10, fontWeight: 700
               }}>
-                <div style={{ width: 6, height: 6, borderRadius: '50%', background: user?.whatsappNumber ? '#22c55e' : '#ef4444' }} />
-                {user?.whatsappNumber ? `+${user.whatsappNumber}` : 'Not Connected'}
+                <div style={{ width: 6, height: 6, borderRadius: '50%', background: waBadge.color }} />
+                {waBadge.text}
               </div>
             </div>
           )}

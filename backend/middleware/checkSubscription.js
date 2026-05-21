@@ -8,7 +8,7 @@ module.exports = async (req, res, next) => {
 
     // 1. If it's a sub-account, check the parent's subscription
     if (req.user.parentId) {
-        const parent = await User.findByPk(req.user.parentId);
+        const parent = await User.findById(req.user.parentId);
         if (!parent || !parent.hasActiveSubscription()) {
             return res.status(403).json({
                 message: 'Your Admin\'s subscription has expired. Please contact your administrator.',

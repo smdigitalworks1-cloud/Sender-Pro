@@ -3,7 +3,6 @@ const router = express.Router();
 const { SupportTicket, User, SuperAdmin } = require('../models');
 const protect = require('../middleware/auth');
 const sendEmail = require('../utils/sendEmail');
-const { Op } = require('sequelize');
 
 // Create a new support ticket (User)
 router.post('/', protect, async (req, res) => {
@@ -13,7 +12,7 @@ router.post('/', protect, async (req, res) => {
             return res.status(400).json({ message: 'Subject and message are required' });
         }
         const ticket = await SupportTicket.create({
-            userId: req.user.id,
+            userId: req.user._id,
             subject,
             message,
             status: 'open'
@@ -21,7 +20,7 @@ router.post('/', protect, async (req, res) => {
 
         // Send Email to Super Admin
         try {
-            const user = await User.findByPk(req.user.id);
+            const user = await User.findById(req.user._id);
             const superAdmin = await SuperAdmin.findOne();
             const supportEmail = superAdmin ? superAdmin.email : 'helpdesk@smdigitalworks.com';
 
@@ -58,16 +57,15 @@ router.post('/', protect, async (req, res) => {
 // Get tickets (User gets own, Admin gets all)
 router.get('/', protect, async (req, res) => {
     try {
-        let where = {};
+        let query = {};
         if (req.user.role !== 'superadmin' && !req.user.isAdmin) {
-            where.userId = req.user.id;
+            query.userId = req.user._id;
         }
 
-        const tickets = await SupportTicket.findAll({
-            where,
-            include: [{ model: User, attributes: ['id', 'name', 'email'] }],
-            order: [['createdAt', 'DESC']]
-        });
+        const tickets = await SupportTicket.find(query)
+            .populate('userId', 'name email')
+            .sort({ createdAt: -1 });
+            
         res.json(tickets);
     } catch (error) {
         console.error(error);
@@ -85,7 +83,7 @@ router.patch('/:id/reply', protect, async (req, res) => {
             return res.status(403).json({ message: 'Not authorized to reply to tickets' });
         }
 
-        const ticket = await SupportTicket.findByPk(req.params.id);
+        const ticket = await SupportTicket.findById(req.params.id);
         if (!ticket) return res.status(404).json({ message: 'Ticket not found' });
 
         if (adminReply !== undefined) ticket.adminReply = adminReply;
@@ -102,11 +100,11 @@ router.patch('/:id/reply', protect, async (req, res) => {
 // Close ticket (User or Admin)
 router.patch('/:id/close', protect, async (req, res) => {
     try {
-        const ticket = await SupportTicket.findByPk(req.params.id);
+        const ticket = await SupportTicket.findById(req.params.id);
         if (!ticket) return res.status(404).json({ message: 'Ticket not found' });
 
         // User can only close their own ticket
-        if (req.user.role !== 'superadmin' && !req.user.isAdmin && ticket.userId !== req.user.id) {
+        if (req.user.role !== 'superadmin' && !req.user.isAdmin && ticket.userId.toString() !== req.user._id.toString()) {
             return res.status(403).json({ message: 'Not authorized' });
         }
 

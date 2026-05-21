@@ -1,16 +1,9 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
-require('dotenv').config();
+require('dotenv').config({ override: true });
 
 const app = express();
-const { sequelize } = require('./models');
-
-// ── Database Connection & Sync ──────────────────────────────
-// In Serverless, we sync to ensure tables exist if not already there
-sequelize.sync({ alter: false }) // Use false to avoid slow schema changes on every request
-    .then(() => console.log('✅ Database synced (Express App)'))
-    .catch(err => console.error('❌ Database sync failed:', err.message));
 
 // ── App Settings / Helpers ──────────────────────────────────
 // Define a dummy helper so routes don't crash when calling undefined

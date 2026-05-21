@@ -43,7 +43,7 @@ router.get('/sync-all', protect, adminOnly, async (req, res) => {
         const syncPayments = require('../utils/syncPayments');
 
         // 1. Sync all users
-        const users = await User.findAll();
+        const users = await User.find();
         let count = 0;
         for (const u of users) {
             // Assign roles logically if empty (retroactive fix)
@@ -62,19 +62,16 @@ router.get('/sync-all', protect, adminOnly, async (req, res) => {
         }
 
         // 2. Sync all payments
-        const payments = await Subscription.findAll({
-            include: [{ model: User, attributes: ['name', 'email', 'whatsappNumber'] }],
-            where: { status: 'paid' }
-        });
+        const payments = await Subscription.find({ status: 'paid' }).populate('userId', 'name email whatsappNumber');
 
         let paymentCount = 0;
         for (const p of payments) {
-            if (p.User) {
+            if (p.userId) {
                 await syncPayments({
-                    userId: p.userId,
-                    name: p.User.name,
-                    email: p.User.email,
-                    whatsappNumber: p.User.whatsappNumber,
+                    userId: p.userId._id,
+                    name: p.userId.name,
+                    email: p.userId.email,
+                    whatsappNumber: p.userId.whatsappNumber,
                     plan: p.plan,
                     amount: p.amount,
                     status: p.status,
@@ -94,17 +91,11 @@ router.get('/sync-all', protect, adminOnly, async (req, res) => {
 // GET /api/admin/users  – all users with subscription info
 router.get('/users', protect, adminOnly, async (req, res) => {
     try {
-        const whereClause = req.user.role === 'superadmin' ? {} : { parentId: req.user.id };
-        const users = await User.findAll({
-            where: whereClause,
-            attributes: ['id', 'name', 'email', 'whatsappNumber', 'isAdmin', 'subStatus', 'subExpiry', 'createdAt', 'parentId'],
-            include: [{
-                model: User,
-                as: 'parentAdmin',
-                attributes: ['name', 'email']
-            }],
-            order: [['createdAt', 'DESC']],
-        });
+        const whereClause = req.user.role === 'superadmin' ? {} : { parentId: req.user._id };
+        const users = await User.find(whereClause)
+            .select('name email whatsappNumber isAdmin subStatus subExpiry createdAt parentId')
+            .populate('parentId', 'name email')
+            .sort({ createdAt: -1 });
         res.json(users);
     } catch (e) { res.status(500).json({ message: e.message }); }
 });
@@ -112,29 +103,32 @@ router.get('/users', protect, adminOnly, async (req, res) => {
 // GET /api/admin/stats  – dashboard stats
 router.get('/stats', protect, adminOnly, async (req, res) => {
     try {
-        const { Op } = require('sequelize');
-        const whereClause = req.user.role === 'superadmin' ? {} : { parentId: req.user.id };
+        const whereClause = req.user.role === 'superadmin' ? {} : { parentId: req.user._id };
 
-        const totalUsers = await User.count({ where: whereClause });
+        const totalUsers = await User.countDocuments(whereClause);
 
         // Regular Users only: parentId IS NULL and isAdmin = false
         const regularUserWhere = req.user.role === 'superadmin'
-            ? { parentId: { [Op.is]: null }, isAdmin: false }
-            : { parentId: req.user.id, isAdmin: false };
-        const regularUserCount = await User.count({ where: regularUserWhere });
+            ? { parentId: null, isAdmin: false }
+            : { parentId: req.user._id, isAdmin: false };
+        const regularUserCount = await User.countDocuments(regularUserWhere);
 
         // Sub-accounts only: parentId IS NOT NULL
         const subAccountWhere = req.user.role === 'superadmin'
-            ? { parentId: { [Op.not]: null } }
-            : { parentId: req.user.id };
-        const subAccountCount = await User.count({ where: subAccountWhere });
+            ? { parentId: { $ne: null } }
+            : { parentId: req.user._id };
+        const subAccountCount = await User.countDocuments(subAccountWhere);
 
-        const trialUsers = await User.count({ where: { ...whereClause, subStatus: 'trial' } });
+        const trialUsers = await User.countDocuments({ ...whereClause, subStatus: 'trial' });
 
         let totalRevenue = 0, totalPayments = 0;
         if (req.user.role === 'superadmin') {
-            totalRevenue = await Subscription.sum('amount', { where: { status: 'paid' } });
-            totalPayments = await Subscription.count({ where: { status: 'paid' } });
+            const revenueResult = await Subscription.aggregate([
+                { $match: { status: 'paid' } },
+                { $group: { _id: null, total: { $sum: "$amount" } } }
+            ]);
+            totalRevenue = revenueResult.length > 0 ? revenueResult[0].total : 0;
+            totalPayments = await Subscription.countDocuments({ status: 'paid' });
         }
         res.json({
             totalUsers,
@@ -153,10 +147,9 @@ router.get('/payments', protect, adminOnly, async (req, res) => {
         if (req.user.role !== 'superadmin') {
             return res.json([]); // Only Super Admin can see payments
         }
-        const payments = await Subscription.findAll({
-            include: [{ model: User, attributes: ['name', 'email'] }],
-            order: [['createdAt', 'DESC']],
-        });
+        const payments = await Subscription.find()
+            .populate('userId', 'name email')
+            .sort({ createdAt: -1 });
         res.json(payments);
     } catch (e) { res.status(500).json({ message: e.message }); }
 });
@@ -165,7 +158,7 @@ router.get('/payments', protect, adminOnly, async (req, res) => {
 router.post('/users', protect, adminOnly, async (req, res) => {
     try {
         if (req.user.role !== 'superadmin') {
-            const count = await User.count({ where: { parentId: req.user.id } });
+            const count = await User.countDocuments({ parentId: req.user._id });
             const limit = APP_LIMITS.maxSubAccountsPerAdmin;
             if (count >= limit) return res.status(400).json({ message: `Sub-account limit reached (max ${limit})` });
         }
@@ -174,10 +167,10 @@ router.post('/users', protect, adminOnly, async (req, res) => {
         if (!name || !email || !password || !whatsappNumber)
             return res.status(400).json({ message: 'Name, email, password, and WhatsApp number are required' });
 
-        const existing = await User.findOne({ where: { email } });
+        const existing = await User.findOne({ email });
         if (existing) return res.status(400).json({ message: 'Email already exists' });
 
-        const determinedParentId = req.user.role === 'superadmin' ? (parentId || null) : req.user.id;
+        const determinedParentId = req.user.role === 'superadmin' ? (parentId || null) : req.user._id;
         const determinedIsAdmin = req.user.role === 'superadmin' ? (isAdmin || false) : false;
 
         let determinedRole = 'user';
@@ -196,7 +189,7 @@ router.post('/users', protect, adminOnly, async (req, res) => {
             subExpiry: subExpiry ? new Date(subExpiry) : null,
         });
 
-        res.status(201).json({ id: u.id, name: u.name, email: u.email, subStatus: u.subStatus, subExpiry: u.subExpiry, isAdmin: u.isAdmin, parentId: u.parentId });
+        res.status(201).json({ id: u._id, name: u.name, email: u.email, subStatus: u.subStatus, subExpiry: u.subExpiry, isAdmin: u.isAdmin, parentId: u.parentId });
 
         // Sync to Google Sheets (Async)
         syncToSheets(u).catch(e => console.error('Sheet sync failed:', e.message));
@@ -230,7 +223,7 @@ router.post('/users', protect, adminOnly, async (req, res) => {
 router.patch('/users/:id', protect, adminOnly, async (req, res) => {
     try {
         if (req.user.role !== 'superadmin') {
-            const check = await User.findOne({ where: { id: req.params.id, parentId: req.user.id } });
+            const check = await User.findOne({ _id: req.params.id, parentId: req.user._id });
             if (!check) return res.status(403).json({ message: 'Not authorized to edit this user' });
         }
         const { subStatus, subExpiry, isAdmin, parentId, name, email, password, whatsappNumber } = req.body;
@@ -242,17 +235,11 @@ router.patch('/users/:id', protect, adminOnly, async (req, res) => {
         if (req.user.role === 'superadmin') {
             if (name !== undefined) update.name = name;
             if (email !== undefined) update.email = email;
-            if (password && password.trim() !== '') update.password = password; // Make sure to hash if not handled in model
+            if (password && password.trim() !== '') update.password = password; 
             if (whatsappNumber !== undefined) update.whatsappNumber = whatsappNumber;
         }
 
-        // Note: Make sure the model hash hook works on update or we find a way to hash if needed.
-        // If password is plain text, sequelize model `beforeUpdate` hook usually handles it. We can manually hash if needed.
-        // Let's assume the hook works. But wait, if they didn't define a hook, we might need to manually hash it.
-        // Let me check if there is a `beforeUpdate` hook or if I should just update it.
-        // I will just let `User.update` try or find the user and `save()` it.
-
-        let targetUser = await User.findByPk(req.params.id);
+        let targetUser = await User.findById(req.params.id);
         if (!targetUser) return res.status(404).json({ message: 'User not found' });
 
         Object.assign(targetUser, update);
@@ -271,7 +258,7 @@ router.patch('/users/:id', protect, adminOnly, async (req, res) => {
                 expiresAt.setDate(expiresAt.getDate() + planConfig.days);
 
                 await Subscription.create({
-                    userId: targetUser.id,
+                    userId: targetUser._id,
                     plan: planKey,
                     amount: planConfig.amount,
                     status: 'paid', // manually assigned by admin is considered paid
@@ -282,7 +269,7 @@ router.patch('/users/:id', protect, adminOnly, async (req, res) => {
                 // Sync payment specifically for manual assignment
                 const syncPayments = require('../utils/syncPayments');
                 syncPayments({
-                    userId: targetUser.id,
+                    userId: targetUser._id,
                     name: targetUser.name,
                     email: targetUser.email,
                     whatsappNumber: targetUser.whatsappNumber,
@@ -297,9 +284,8 @@ router.patch('/users/:id', protect, adminOnly, async (req, res) => {
             }
         }
 
-        const user = await User.findByPk(req.params.id, {
-            attributes: ['id', 'name', 'email', 'isAdmin', 'subStatus', 'subExpiry', 'parentId', 'createdAt', 'whatsappNumber'],
-        });
+        const user = await User.findById(req.params.id)
+            .select('name email isAdmin subStatus subExpiry parentId createdAt whatsappNumber');
         res.json(user);
 
         // Sync to Google Sheets (Async)
@@ -311,12 +297,12 @@ router.patch('/users/:id', protect, adminOnly, async (req, res) => {
 router.delete('/users/:id', protect, adminOnly, async (req, res) => {
     try {
         if (req.user.role !== 'superadmin') {
-            const check = await User.findOne({ where: { id: req.params.id, parentId: req.user.id } });
+            const check = await User.findOne({ _id: req.params.id, parentId: req.user._id });
             if (!check) return res.status(403).json({ message: 'Not authorized to delete this user' });
         }
-        if (req.user.id === Number(req.params.id))
+        if (req.user._id.toString() === req.params.id)
             return res.status(400).json({ message: 'Cannot delete yourself' });
-        await User.destroy({ where: { id: req.params.id } });
+        await User.deleteOne({ _id: req.params.id });
         res.json({ message: 'User deleted' });
     } catch (e) { res.status(500).json({ message: e.message }); }
 });

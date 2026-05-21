@@ -23,12 +23,11 @@ const CATEGORY_INFO = {
 
 const PLAN_THEMES = {
     monthly: { icon: <Zap size={28} />, color: '#7c3aed', gradient: 'linear-gradient(135deg, #7c3aed22, #4f1d9622)', border: '#7c3aed' },
-    quarterly: { icon: <Calendar size={28} />, color: '#06b6d4', gradient: 'linear-gradient(135deg, #06b6d422, #0e748022)', border: '#06b6d4' },
-    yearly: { icon: <Star size={28} />, color: '#f59e0b', gradient: 'linear-gradient(135deg, #f59e0b22, #b4570822)', border: '#f59e0b', popular: true, badge: 'Best Value' },
+    quarterly: { icon: <Star size={28} />, color: '#f59e0b', gradient: 'linear-gradient(135deg, #f59e0b22, #b4570822)', border: '#f59e0b', popular: true, badge: 'Best Value' },
 };
 
 export default function PricingPage() {
-    const { user } = useAuth();
+    const { user, refreshUser, refreshSubscription } = useAuth();
     const navigate = useNavigate();
     const [loading, setLoading] = useState('');
     const [plans, setPlans] = useState([]);
@@ -79,6 +78,8 @@ export default function PricingPage() {
                         const vData = await vRes.json();
                         if (vRes.ok) {
                             toast.success('🎉 Payment successful! Subscription activated!');
+                            if (refreshUser) await refreshUser();
+                            if (refreshSubscription) await refreshSubscription();
                             setTimeout(() => navigate('/dashboard'), 1500);
                         } else throw new Error(vData.message);
                     } catch (e) { toast.error(e.message); }
@@ -124,21 +125,7 @@ export default function PricingPage() {
                     Unlock full WhatsApp automation power. No limits. Cancel anytime.
                 </p>
 
-                {/* Category Toggle */}
-                <div style={{ display: 'inline-flex', background: 'var(--bg2)', padding: 6, borderRadius: 16, border: '1px solid var(--border)', marginBottom: 40 }}>
-                    <button onClick={() => setCategory('user')} style={{
-                        padding: '10px 24px', borderRadius: 12, border: 'none',
-                        background: category === 'user' ? 'var(--accent)' : 'transparent',
-                        color: category === 'user' ? '#fff' : 'var(--text3)',
-                        fontWeight: 700, cursor: 'pointer', transition: '0.2s'
-                    }}>👤 {CATEGORY_INFO.user.label}</button>
-                    <button onClick={() => setCategory('admin')} style={{
-                        padding: '10px 24px', borderRadius: 12, border: 'none',
-                        background: category === 'admin' ? 'var(--accent)' : 'transparent',
-                        color: category === 'admin' ? '#fff' : 'var(--text3)',
-                        fontWeight: 700, cursor: 'pointer', transition: '0.2s'
-                    }}>👨‍💼 {CATEGORY_INFO.admin.label}</button>
-                </div>
+                {/* Category Toggle hidden - only User plans are active */}
 
                 <div style={{ color: 'var(--text2)', marginBottom: 20, fontSize: 14 }}>
                     {theme.description}
@@ -150,6 +137,8 @@ export default function PricingPage() {
                 {filteredPlans.map((plan) => {
                     const duration = plan.id.split('_')[1]; // monthly, quarterly, yearly
                     const style = PLAN_THEMES[duration] || PLAN_THEMES.monthly;
+                    const isSubscribed = user?.subStatus === 'active' || user?.subStatus === 'trial';
+                    const isCurrentPlan = isSubscribed && user?.activePlan === plan.id;
 
                     return (
                         <div key={plan.id} style={{
@@ -166,6 +155,7 @@ export default function PricingPage() {
                                     position: 'absolute', top: -14, left: '50%', transform: 'translateX(-50%)',
                                     background: style.color, color: '#fff', fontSize: 12, fontWeight: 700,
                                     padding: '4px 16px', borderRadius: 20, whiteSpace: 'nowrap',
+                                    zIndex: 10
                                 }}>
                                     {style.badge}
                                 </div>
@@ -203,19 +193,33 @@ export default function PricingPage() {
                                 )}
                             </div>
 
-                            <button
-                                onClick={() => handlePay(plan)}
-                                disabled={!!loading}
-                                style={{
-                                    width: '100%', padding: '13px', borderRadius: 12, border: 'none',
-                                    background: style.color, color: '#fff', fontWeight: 700, fontSize: 15,
-                                    cursor: loading ? 'not-allowed' : 'pointer', opacity: loading && loading !== plan.id ? 0.6 : 1,
-                                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                                    transition: 'all 0.2s',
-                                }}
-                            >
-                                {loading === plan.id ? <><Loader size={16} className="spin" /> Processing...</> : `Subscribe ₹${plan.amount.toLocaleString()}`}
-                            </button>
+                            {isCurrentPlan ? (
+                                <div
+                                    style={{
+                                        width: '100%', padding: '13px', borderRadius: 12,
+                                        background: 'rgba(34, 197, 94, 0.1)', color: '#22c55e',
+                                        border: '1.5px solid rgba(34, 197, 94, 0.4)',
+                                        fontWeight: 700, fontSize: 15, textAlign: 'center',
+                                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8
+                                    }}
+                                >
+                                    ✅ Active Plan
+                                </div>
+                            ) : (
+                                <button
+                                    onClick={() => handlePay(plan)}
+                                    disabled={!!loading}
+                                    style={{
+                                        width: '100%', padding: '13px', borderRadius: 12, border: 'none',
+                                        background: style.color, color: '#fff', fontWeight: 700, fontSize: 15,
+                                        cursor: loading ? 'not-allowed' : 'pointer', opacity: loading && loading !== plan.id ? 0.6 : 1,
+                                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                                        transition: 'all 0.2s',
+                                    }}
+                                >
+                                    {loading === plan.id ? <><Loader size={16} className="spin" /> Processing...</> : `Subscribe ₹${plan.amount.toLocaleString()}`}
+                                </button>
+                            )}
                         </div>
                     );
                 })}

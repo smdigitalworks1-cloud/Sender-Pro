@@ -1,8 +1,7 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-const { Op } = require('sequelize');
-const { User, SuperAdmin } = require('../models');
+const { User, SuperAdmin, Subscription } = require('../models');
 const protect = require('../middleware/auth');
 const sendEmail = require('../utils/sendEmail');
 const router = express.Router();
@@ -16,7 +15,7 @@ router.post('/register', async (req, res) => {
     if (!name || !email || !password || !whatsappNumber)
       return res.status(400).json({ message: 'Name, email, password, and WhatsApp number are required' });
 
-    if (await User.findOne({ where: { email } }))
+    if (await User.findOne({ email }))
       return res.status(400).json({ message: 'Email already registered' });
 
     const user = await User.create({
@@ -54,12 +53,13 @@ router.post('/register', async (req, res) => {
     }).catch(e => console.error('Welcome email failed:', e.message));
 
     res.status(201).json({
-      id: user.id, name: user.name, email: user.email,
+      id: user._id, name: user.name, email: user.email,
       whatsappNumber: user.whatsappNumber,
       isAdmin: user.isAdmin, parentId: user.parentId,
       subStatus: user.subStatus,
       subExpiry: user.subExpiry,
-      token: sign(user.id, user.isAdmin)
+      activePlan: user.activePlan || null,
+      token: sign(user._id, user.isAdmin)
     });
   } catch (e) {
     console.error('[AUTH] Registration crashed:', e);
@@ -71,7 +71,7 @@ router.post('/register', async (req, res) => {
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-    const user = await User.findOne({ where: { email } });
+    const user = await User.findOne({ email });
     if (!user || !(await user.matchPassword(password)))
       return res.status(401).json({ message: 'Invalid email or password' });
 
@@ -101,11 +101,9 @@ router.post('/verify-otp', async (req, res) => {
   try {
     const { email, otp } = req.body;
     const user = await User.findOne({
-      where: {
-        email,
-        otp,
-        otpExpires: { [Op.gt]: Date.now() }
-      }
+      email,
+      otp,
+      otpExpires: { $gt: Date.now() }
     });
 
     if (!user) return res.status(401).json({ message: 'Invalid or expired OTP' });
@@ -116,10 +114,14 @@ router.post('/verify-otp', async (req, res) => {
     await user.save();
 
     res.json({
-      id: user.id, name: user.name, email: user.email,
+      id: user._id, name: user.name, email: user.email,
+      whatsappNumber: user.whatsappNumber || null,
       isAdmin: user.isAdmin, parentId: user.parentId,
-      role: user.isAdmin ? 'admin' : 'user',
-      token: sign(user.id, user.isAdmin)
+      role: user.role || (user.isAdmin ? 'admin' : 'user'),
+      subStatus: user.subStatus || 'none',
+      subExpiry: user.subExpiry || null,
+      activePlan: user.activePlan || null,
+      token: sign(user._id, user.isAdmin)
     });
   } catch (e) {
     res.status(500).json({ message: e.message });
@@ -130,7 +132,7 @@ router.post('/verify-otp', async (req, res) => {
 router.post('/admin-login', async (req, res) => {
   try {
     const { email, password } = req.body;
-    const admin = await SuperAdmin.findOne({ where: { email } });
+    const admin = await SuperAdmin.findOne({ email });
 
     if (!admin || !(await admin.matchPassword(password)))
       return res.status(401).json({ message: 'Invalid admin email or password' });
@@ -161,11 +163,9 @@ router.post('/admin-verify-otp', async (req, res) => {
   try {
     const { email, otp } = req.body;
     const admin = await SuperAdmin.findOne({
-      where: {
-        email,
-        otp,
-        otpExpires: { [Op.gt]: Date.now() }
-      }
+      email,
+      otp,
+      otpExpires: { $gt: Date.now() }
     });
 
     if (!admin) return res.status(401).json({ message: 'Invalid or expired OTP' });
@@ -175,10 +175,10 @@ router.post('/admin-verify-otp', async (req, res) => {
     admin.otpExpires = null;
     await admin.save();
 
-    const token = jwt.sign({ id: admin.id, role: 'superadmin' }, process.env.JWT_SECRET, { expiresIn: '30d' });
+    const token = jwt.sign({ id: admin._id, role: 'superadmin' }, process.env.JWT_SECRET, { expiresIn: '30d' });
 
     res.json({
-      id: admin.id, name: admin.name, email: admin.email, role: 'superadmin', token
+      id: admin._id, name: admin.name, email: admin.email, role: 'superadmin', token
     });
   } catch (e) {
     res.status(500).json({ message: e.message });
@@ -190,7 +190,7 @@ router.get('/me', protect, (req, res) => {
   const u = req.user;
   // Return key fields (middleware already loaded fresh from DB)
   res.json({
-    id: u.id,
+    id: u._id,
     name: u.name,
     email: u.email,
     whatsappNumber: u.whatsappNumber || null,
@@ -199,20 +199,19 @@ router.get('/me', protect, (req, res) => {
     role: u.role || (u.isAdmin ? 'admin' : 'user'),
     subStatus: u.subStatus || 'none',
     subExpiry: u.subExpiry || null,
+    activePlan: u.activePlan || null,
   });
 });
 
 // Profile - detailed profile with payment history
 router.get('/profile', protect, async (req, res) => {
   try {
-    const { User, Subscription } = require('../models');
-
     // For superadmin, we don't have subscriptions in the same way, 
     // but we can return basic info.
     if (req.user.role === 'superadmin') {
       return res.json({
         user: {
-          id: req.user.id,
+          id: req.user._id,
           name: req.user.name,
           email: req.user.email,
           role: 'superadmin'
@@ -221,14 +220,11 @@ router.get('/profile', protect, async (req, res) => {
       });
     }
 
-    const user = await User.findByPk(req.user.id, {
-      attributes: ['id', 'name', 'email', 'whatsappNumber', 'isAdmin', 'subStatus', 'subExpiry', 'createdAt']
-    });
+    const user = await User.findById(req.user._id)
+      .select('name email whatsappNumber isAdmin subStatus subExpiry activePlan createdAt');
 
-    const subscriptions = await Subscription.findAll({
-      where: { userId: req.user.id },
-      order: [['createdAt', 'DESC']]
-    });
+    const subscriptions = await Subscription.find({ userId: req.user._id })
+      .sort({ createdAt: -1 });
 
     res.json({ user, subscriptions });
   } catch (e) {
@@ -243,9 +239,9 @@ router.put('/update-profile', protect, async (req, res) => {
     let account;
 
     if (req.user.role === 'superadmin') {
-      account = await SuperAdmin.findByPk(req.user.id);
+      account = await SuperAdmin.findById(req.user._id);
     } else {
-      account = await User.findByPk(req.user.id);
+      account = await User.findById(req.user._id);
     }
 
     if (!account) return res.status(404).json({ message: 'Account not found' });
@@ -264,7 +260,7 @@ router.put('/update-profile', protect, async (req, res) => {
     res.json({
       message: 'Profile updated successfully',
       user: {
-        id: account.id,
+        id: account._id,
         name: account.name,
         email: account.email,
         whatsappNumber: account.whatsappNumber,
@@ -279,11 +275,11 @@ router.put('/update-profile', protect, async (req, res) => {
 // Forgot Password
 router.post('/forgot-password', async (req, res) => {
   try {
-    let account = await User.findOne({ where: { email: req.body.email } });
+    let account = await User.findOne({ email: req.body.email });
 
     // Fallback to SuperAdmin if not found in User
     if (!account) {
-      account = await SuperAdmin.findOne({ where: { email: req.body.email } });
+      account = await SuperAdmin.findOne({ email: req.body.email });
     }
 
     if (!account) return res.status(404).json({ message: 'User not found' });
@@ -324,18 +320,14 @@ router.post('/reset-password/:token', async (req, res) => {
     const resetPasswordToken = crypto.createHash('sha256').update(req.params.token).digest('hex');
 
     let account = await User.findOne({
-      where: {
-        resetPasswordToken,
-        resetPasswordExpire: { [Op.gt]: Date.now() }
-      }
+      resetPasswordToken,
+      resetPasswordExpire: { $gt: Date.now() }
     });
 
     if (!account) {
       account = await SuperAdmin.findOne({
-        where: {
-          resetPasswordToken,
-          resetPasswordExpire: { [Op.gt]: Date.now() }
-        }
+        resetPasswordToken,
+        resetPasswordExpire: { $gt: Date.now() }
       });
     }
 
@@ -360,9 +352,9 @@ router.post('/change-password', protect, async (req, res) => {
     // Load fresh account with password for verification (since middleware excludes it)
     let account;
     if (req.user.role === 'superadmin') {
-      account = await SuperAdmin.findByPk(req.user.id);
+      account = await SuperAdmin.findById(req.user._id);
     } else {
-      account = await User.findByPk(req.user.id);
+      account = await User.findById(req.user._id);
     }
 
     if (!account || !(await account.matchPassword(currentPassword))) {

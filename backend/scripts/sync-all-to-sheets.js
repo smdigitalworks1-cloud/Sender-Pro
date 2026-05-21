@@ -1,20 +1,20 @@
 require('dotenv').config({ path: '../.env' });
-const { User, sequelize } = require('../models');
+const connectDB = require('../config/database');
+const { User } = require('../models');
 const syncToSheets = require('../utils/syncSheets');
 
 async function syncAll() {
     console.log('🚀 Starting full synchronization to Google Sheets...');
 
     try {
-        // Authenticate DB
-        await sequelize.authenticate();
+        // Connect DB
+        await connectDB();
         console.log('✅ Database connected.');
 
         // Fetch all top-level paid users/admins
-        // Filter criteria: parentId is null AND (subStatus is active OR trial)
-        const users = await User.findAll();
+        const users = await User.find();
 
-        console.log(`Found ${users.length} top-level accounts. Filtering for paid status...`);
+        console.log(`Found ${users.length} accounts.`);
 
         let syncCount = 0;
         for (const user of users) {

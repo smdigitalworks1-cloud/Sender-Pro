@@ -1,257 +1,240 @@
+const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
 
-const { Sequelize, DataTypes } = require('sequelize');
-const sequelize = require('../config/database');
+// Global virtuals configuration
+mongoose.set('toJSON', { virtuals: true });
+mongoose.set('toObject', { virtuals: true });
 
-const User = sequelize.define('User', {
-  name: { type: DataTypes.STRING, allowNull: false },
-  email: { type: DataTypes.STRING, allowNull: false, unique: true },
-  password: { type: DataTypes.STRING, allowNull: false },
-  whatsappNumber: { type: DataTypes.STRING }, // Stores the permanently locked WhatsApp number
-  role: { type: DataTypes.ENUM('user', 'admin', 'subaccount'), defaultValue: 'user' }, // The true DB type
-  isAdmin: { type: DataTypes.BOOLEAN, defaultValue: false }, // Legacy support
-  subStatus: { type: DataTypes.ENUM('trial', 'active', 'expired', 'none'), defaultValue: 'none' },
-  subExpiry: { type: DataTypes.DATE, defaultValue: null },
-  parentId: { type: DataTypes.INTEGER, defaultValue: null },
-  otp: { type: DataTypes.STRING },
-  otpExpires: { type: DataTypes.DATE },
-  resetPasswordToken: { type: DataTypes.STRING },
-  resetPasswordExpire: { type: DataTypes.DATE },
-}, {
-  timestamps: true,
-  hooks: {
-    beforeCreate: async (user) => {
-      user.password = await require('bcryptjs').hash(user.password, 10);
-    },
-    beforeUpdate: async (user) => {
-      if (user.changed('password')) {
-        user.password = await require('bcryptjs').hash(user.password, 10);
-      }
-    }
-  }
+// ── User Schema ───────────────────────────────────────────────
+const userSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  whatsappNumber: { type: String },
+  role: { type: String, enum: ['user', 'admin', 'subaccount', 'superadmin'], default: 'user' },
+  isAdmin: { type: Boolean, default: false },
+  subStatus: { type: String, enum: ['trial', 'active', 'expired', 'none'], default: 'none' },
+  subExpiry: { type: Date, default: null },
+  activePlan: { type: String, default: null },
+  parentId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  otp: { type: String },
+  otpExpires: { type: Date },
+  resetPasswordToken: { type: String },
+  resetPasswordExpire: { type: Date },
+}, { timestamps: true, toJSON: { virtuals: true }, toObject: { virtuals: true } });
+
+userSchema.pre('save', async function (next) {
+  if (!this.isModified('password')) return next();
+  this.password = await bcrypt.hash(this.password, 10);
 });
 
-User.prototype.matchPassword = async function (enteredPassword) {
-  return await require('bcryptjs').compare(enteredPassword, this.password);
+userSchema.methods.matchPassword = async function (enteredPassword) {
+  return await bcrypt.compare(enteredPassword, this.password);
 };
 
-const SuperAdmin = sequelize.define('SuperAdmin', {
-  name: { type: DataTypes.STRING, allowNull: false, defaultValue: 'Super Admin' },
-  email: { type: DataTypes.STRING, allowNull: false, unique: true },
-  whatsappNumber: { type: DataTypes.STRING },
-  password: { type: DataTypes.STRING, allowNull: false },
-  resetPasswordToken: { type: DataTypes.STRING },
-  resetPasswordExpire: { type: DataTypes.DATE },
-  otp: { type: DataTypes.STRING },
-  otpExpires: { type: DataTypes.DATE },
-}, {
-  timestamps: true,
-  hooks: {
-    beforeCreate: async (admin) => {
-      admin.password = await require('bcryptjs').hash(admin.password, 10);
-    },
-    beforeUpdate: async (admin) => {
-      if (admin.changed('password')) {
-        admin.password = await require('bcryptjs').hash(admin.password, 10);
-      }
-    }
-  }
-});
-
-SuperAdmin.prototype.matchPassword = async function (enteredPassword) {
-  return await require('bcryptjs').compare(enteredPassword, this.password);
-};
-
-User.prototype.hasActiveSubscription = function () {
+userSchema.methods.hasActiveSubscription = function () {
   if (this.role === 'superadmin' || this.role === 'admin' || this.isAdmin) return true;
   if (this.role === 'subaccount' || this.parentId) return true;
   
-  if (this.subStatus === 'active') {
-    if (!this.subExpiry || new Date(this.subExpiry) > new Date()) return true;
-  }
-  if (this.subStatus === 'trial') {
+  if (this.subStatus === 'active' || this.subStatus === 'trial') {
     if (!this.subExpiry || new Date(this.subExpiry) > new Date()) return true;
   }
   return false;
 };
 
-const Contact = sequelize.define('Contact', {
-  userId: { type: DataTypes.INTEGER, allowNull: false },
-  name: { type: DataTypes.STRING, defaultValue: '' },
-  phone: { type: DataTypes.STRING, allowNull: false },
-  group: { type: DataTypes.STRING, defaultValue: 'Default' },
-  tags: { type: DataTypes.JSON, defaultValue: [] },
-  source: { type: DataTypes.ENUM('manual', 'import', 'group_grab'), defaultValue: 'manual' },
-  isWhatsApp: { type: DataTypes.BOOLEAN, defaultValue: null },
-  lastValidated: { type: DataTypes.DATE },
-  variables: { type: DataTypes.JSON, defaultValue: {} },
-}, { 
-  timestamps: true,
-  indexes: [
-    {
-      unique: true,
-      fields: ['userId', 'phone']
-    }
-  ]
+const User = mongoose.model('User', userSchema);
+
+// ── SuperAdmin Schema ─────────────────────────────────────────
+const superAdminSchema = new mongoose.Schema({
+  name: { type: String, required: true, default: 'Super Admin' },
+  email: { type: String, required: true, unique: true },
+  whatsappNumber: { type: String },
+  password: { type: String, required: true },
+  resetPasswordToken: { type: String },
+  resetPasswordExpire: { type: Date },
+  otp: { type: String },
+  otpExpires: { type: Date },
+}, { timestamps: true });
+
+superAdminSchema.pre('save', async function (next) {
+  if (!this.isModified('password')) return next();
+  this.password = await bcrypt.hash(this.password, 10);
 });
 
-const Campaign = sequelize.define('Campaign', {
-  userId: { type: DataTypes.INTEGER, allowNull: false },
-  name: { type: DataTypes.STRING, allowNull: false },
-  message: { type: DataTypes.TEXT, allowNull: false },
-  mediaUrl: { type: DataTypes.STRING, defaultValue: '' },
-  contacts: { type: DataTypes.JSON, defaultValue: [] },
-  results: { type: DataTypes.JSON, defaultValue: [] },
-  status: { type: DataTypes.ENUM('draft', 'running', 'completed', 'failed'), defaultValue: 'draft' },
-  sent: { type: DataTypes.INTEGER, defaultValue: 0 },
-  failed: { type: DataTypes.INTEGER, defaultValue: 0 },
-  total: { type: DataTypes.INTEGER, defaultValue: 0 },
-  delay: { type: DataTypes.INTEGER, defaultValue: 3 },
-  startedAt: { type: DataTypes.DATE },
-  finishedAt: { type: DataTypes.DATE },
-  isSuper: { type: DataTypes.BOOLEAN, defaultValue: false },
+superAdminSchema.methods.matchPassword = async function (enteredPassword) {
+  return await bcrypt.compare(enteredPassword, this.password);
+};
+
+const SuperAdmin = mongoose.model('SuperAdmin', superAdminSchema);
+
+// ── Contact Schema ────────────────────────────────────────────
+const contactSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  name: { type: String, default: '' },
+  phone: { type: String, required: true },
+  group: { type: String, default: 'Default' },
+  tags: { type: [String], default: [] },
+  source: { type: String, enum: ['manual', 'import', 'group_grab'], default: 'manual' },
+  isWhatsApp: { type: Boolean, default: null },
+  lastValidated: { type: Date },
+  variables: { type: mongoose.Schema.Types.Mixed, default: {} },
 }, { timestamps: true });
 
-const AutoReply = sequelize.define('AutoReply', {
-  userId: { type: DataTypes.INTEGER, allowNull: false },
-  trigger: { type: DataTypes.STRING, allowNull: false },
-  triggerType: { type: DataTypes.ENUM('contains', 'exact', 'any'), defaultValue: 'contains' },
-  response: { type: DataTypes.TEXT, allowNull: false },
-  mediaUrl: { type: DataTypes.STRING, defaultValue: '' },
-  active: { type: DataTypes.BOOLEAN, defaultValue: true },
-  order: { type: DataTypes.INTEGER, defaultValue: 0 },
-  delayHours: { type: DataTypes.INTEGER, defaultValue: 24 },
-  hitCount: { type: DataTypes.INTEGER, defaultValue: 0 },
+contactSchema.index({ userId: 1, phone: 1 }, { unique: true });
+const Contact = mongoose.model('Contact', contactSchema);
+
+// ── Campaign Schema ───────────────────────────────────────────
+const campaignSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  name: { type: String, required: true },
+  message: { type: String, required: true },
+  mediaUrl: { type: String, default: '' },
+  contacts: { type: Array, default: [] },
+  results: { type: Array, default: [] },
+  status: { type: String, enum: ['draft', 'running', 'completed', 'failed'], default: 'draft' },
+  sent: { type: Number, default: 0 },
+  failed: { type: Number, default: 0 },
+  total: { type: Number, default: 0 },
+  delay: { type: Number, default: 3 },
+  startedAt: { type: Date },
+  finishedAt: { type: Date },
+  isSuper: { type: Boolean, default: false },
 }, { timestamps: true });
 
-const Schedule = sequelize.define('Schedule', {
-  userId: { type: DataTypes.INTEGER, allowNull: false },
-  name: { type: DataTypes.STRING, allowNull: false },
-  message: { type: DataTypes.TEXT, allowNull: false },
-  contacts: { type: DataTypes.JSON, defaultValue: [] },
-  targetGroups: { type: DataTypes.JSON, defaultValue: [] },
-  mediaUrl: { type: DataTypes.STRING, defaultValue: '' },
-  cronExpr: { type: DataTypes.STRING, defaultValue: '' },
-  scheduledAt: { type: DataTypes.DATE },
-  isRecurring: { type: DataTypes.BOOLEAN, defaultValue: true },
-  active: { type: DataTypes.BOOLEAN, defaultValue: true },
-  lastRun: { type: DataTypes.DATE },
-  runCount: { type: DataTypes.INTEGER, defaultValue: 0 },
-  isSuper: { type: DataTypes.BOOLEAN, defaultValue: false },
+const Campaign = mongoose.model('Campaign', campaignSchema);
+
+// ── AutoReply Schema ──────────────────────────────────────────
+const autoReplySchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  trigger: { type: String, required: true },
+  triggerType: { type: String, enum: ['contains', 'exact', 'any'], default: 'contains' },
+  response: { type: String, required: true },
+  mediaUrl: { type: String, default: '' },
+  active: { type: Boolean, default: true },
+  order: { type: Number, default: 0 },
+  delayHours: { type: Number, default: 24 },
+  hitCount: { type: Number, default: 0 },
 }, { timestamps: true });
 
-const Project = sequelize.define('Project', {
-  userId: { type: DataTypes.INTEGER, allowNull: false },
-  name: { type: DataTypes.STRING, allowNull: false },
-  description: { type: DataTypes.STRING, defaultValue: '' },
-  status: { type: DataTypes.ENUM('active', 'paused'), defaultValue: 'active' },
+const AutoReply = mongoose.model('AutoReply', autoReplySchema);
+
+// ── Schedule Schema ───────────────────────────────────────────
+const scheduleSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  name: { type: String, required: true },
+  message: { type: String, required: true },
+  contacts: { type: Array, default: [] },
+  targetGroups: { type: Array, default: [] },
+  mediaUrl: { type: String, default: '' },
+  cronExpr: { type: String, default: '' },
+  scheduledAt: { type: Date },
+  isRecurring: { type: Boolean, default: true },
+  active: { type: Boolean, default: true },
+  lastRun: { type: Date },
+  runCount: { type: Number, default: 0 },
+  isSuper: { type: Boolean, default: false },
 }, { timestamps: true });
 
-const Automation = sequelize.define('Automation', {
-  userId: { type: DataTypes.INTEGER, allowNull: false },
-  projectId: { type: DataTypes.INTEGER, allowNull: false },
-  name: { type: DataTypes.STRING, allowNull: false },
-  triggerType: { type: DataTypes.ENUM('manual', 'schedule'), defaultValue: 'manual' },
-  scheduledAt: { type: DataTypes.DATE },
-  status: { type: DataTypes.ENUM('active', 'paused', 'completed'), defaultValue: 'active' },
-  targetGroups: { type: DataTypes.JSON, defaultValue: [] },
-  lastRunAt: { type: DataTypes.DATE },
-  isSuper: { type: DataTypes.BOOLEAN, defaultValue: false },
+const Schedule = mongoose.model('Schedule', scheduleSchema);
+
+// ── Project Schema ────────────────────────────────────────────
+const projectSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  name: { type: String, required: true },
+  description: { type: String, default: '' },
+  status: { type: String, enum: ['active', 'paused'], default: 'active' },
 }, { timestamps: true });
 
-const AutomationStep = sequelize.define('AutomationStep', {
-  automationId: { type: DataTypes.INTEGER, allowNull: false },
-  stepOrder: { type: DataTypes.INTEGER, allowNull: false },
-  actionType: { type: DataTypes.ENUM('send_message', 'delay'), allowNull: false },
-  message: { type: DataTypes.TEXT, defaultValue: '' },
-  mediaUrl: { type: DataTypes.STRING, defaultValue: '' },
-  delayValue: { type: DataTypes.INTEGER, defaultValue: 0 },
-  delayUnit: { type: DataTypes.ENUM('minutes', 'hours', 'days'), defaultValue: 'minutes' },
-  delayOption: { type: DataTypes.ENUM('duration', 'exact_time'), defaultValue: 'duration' },
-  delayUntilDate: { type: DataTypes.DATE },
-  delayMinutes: { type: DataTypes.INTEGER, defaultValue: 0 },
+const Project = mongoose.model('Project', projectSchema);
+
+// ── Automation Schema ─────────────────────────────────────────
+const automationSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  projectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Project', required: true },
+  name: { type: String, required: true },
+  triggerType: { type: String, enum: ['manual', 'schedule'], default: 'manual' },
+  scheduledAt: { type: Date },
+  eventTime: { type: Date },
+  status: { type: String, enum: ['active', 'paused', 'completed'], default: 'active' },
+  targetGroups: { type: Array, default: [] },
+  lastRunAt: { type: Date },
+  isSuper: { type: Boolean, default: false },
+}, { timestamps: true });
+
+const Automation = mongoose.model('Automation', automationSchema);
+
+// ── AutomationStep Schema ─────────────────────────────────────
+const automationStepSchema = new mongoose.Schema({
+  automationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Automation', required: true },
+  stepOrder: { type: Number, required: true },
+  actionType: { type: String, enum: ['send_message', 'delay'], required: true },
+  message: { type: String, default: '' },
+  mediaUrl: { type: String, default: '' },
+  delayValue: { type: Number, default: 0 },
+  delayUnit: { type: String, enum: ['minutes', 'hours', 'days'], default: 'minutes' },
+  delayOption: { type: String, enum: ['duration', 'exact_time', 'event_time'], default: 'duration' },
+  delayUntilDate: { type: Date },
+  delayMinutes: { type: Number, default: 0 },
+  eventWhen: { type: String, enum: ['before', 'after', 'exact'], default: 'exact' },
+  eventOffsetDays: { type: Number, default: 0 },
+  eventOffsetHours: { type: Number, default: 0 },
+  eventOffsetMinutes: { type: Number, default: 0 },
+  pastAction: { type: String, enum: ['proceed', 'skip'], default: 'proceed' }
 }, { timestamps: false });
 
-const AutomationLog = sequelize.define('AutomationLog', {
-  automationId: { type: DataTypes.INTEGER, allowNull: false },
-  groupId: { type: DataTypes.STRING, allowNull: false },
-  stepId: { type: DataTypes.INTEGER },
-  status: { type: DataTypes.ENUM('success', 'failed', 'pending'), defaultValue: 'pending' },
-  error: { type: DataTypes.TEXT, defaultValue: '' },
-  executedAt: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+const AutomationStep = mongoose.model('AutomationStep', automationStepSchema);
+
+// ── AutomationLog Schema ──────────────────────────────────────
+const automationLogSchema = new mongoose.Schema({
+  automationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Automation', required: true },
+  groupId: { type: String, required: true },
+  stepId: { type: mongoose.Schema.Types.ObjectId, ref: 'AutomationStep' },
+  status: { type: String, enum: ['success', 'failed', 'pending'], default: 'pending' },
+  error: { type: String, default: '' },
+  executedAt: { type: Date, default: Date.now },
+  scheduledNextAt: { type: Date, default: null }, // When the next action is expected after a delay
 }, { timestamps: false });
 
-const GlobalVar = sequelize.define('GlobalVar', {
-  userId: { type: DataTypes.INTEGER, allowNull: false },
-  key: { type: DataTypes.STRING, allowNull: false },
-  value: { type: DataTypes.STRING, allowNull: false },
+const AutomationLog = mongoose.model('AutomationLog', automationLogSchema);
+
+// ── GlobalVar Schema ──────────────────────────────────────────
+const globalVarSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  key: { type: String, required: true },
+  value: { type: String, required: true },
 }, { timestamps: true });
 
-// ── Subscription / Payment model ───────────────────────────────
-const Subscription = sequelize.define('Subscription', {
-  userId: { type: DataTypes.INTEGER, allowNull: false },
-  plan: { type: DataTypes.STRING, allowNull: false },          // 'monthly', 'quarterly', 'yearly'
-  amount: { type: DataTypes.INTEGER, allowNull: false },          // in paise (INR * 100)
-  currency: { type: DataTypes.STRING, defaultValue: 'INR' },
-  status: { type: DataTypes.ENUM('pending', 'paid', 'failed'), defaultValue: 'pending' },
-  razorpayOrderId: { type: DataTypes.STRING },
-  razorpayPaymentId: { type: DataTypes.STRING },
-  razorpaySignature: { type: DataTypes.STRING },
-  startDate: { type: DataTypes.DATE },
-  endDate: { type: DataTypes.DATE },
-  notes: { type: DataTypes.STRING, defaultValue: '' },
+const GlobalVar = mongoose.model('GlobalVar', globalVarSchema);
+
+// ── Subscription Schema ───────────────────────────────────────
+const subscriptionSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  plan: { type: String, required: true },
+  amount: { type: Number, required: true },
+  currency: { type: String, default: 'INR' },
+  status: { type: String, enum: ['pending', 'paid', 'failed'], default: 'pending' },
+  razorpayOrderId: { type: String },
+  razorpayPaymentId: { type: String },
+  razorpaySignature: { type: String },
+  startDate: { type: Date },
+  endDate: { type: Date },
+  notes: { type: String, default: '' },
+}, { timestamps: true, toJSON: { virtuals: true }, toObject: { virtuals: true } });
+
+const Subscription = mongoose.model('Subscription', subscriptionSchema);
+
+// ── SupportTicket Schema ──────────────────────────────────────
+const supportTicketSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  subject: { type: String, required: true },
+  message: { type: String, required: true },
+  status: { type: String, enum: ['open', 'resolved', 'closed'], default: 'open' },
+  adminReply: { type: String, default: '' },
 }, { timestamps: true });
 
-// ── Support Ticket model ───────────────────────────────
-const SupportTicket = sequelize.define('SupportTicket', {
-  userId: { type: DataTypes.INTEGER, allowNull: false },
-  subject: { type: DataTypes.STRING, allowNull: false },
-  message: { type: DataTypes.TEXT, allowNull: false },
-  status: { type: DataTypes.ENUM('open', 'resolved', 'closed'), defaultValue: 'open' },
-  adminReply: { type: DataTypes.TEXT, defaultValue: '' },
-}, { timestamps: true });
-
-// Setup associations
-User.hasMany(User, { foreignKey: 'parentId', as: 'subAccounts' });
-User.belongsTo(User, { foreignKey: 'parentId', as: 'parentAdmin' });
-
-User.hasMany(Contact, { foreignKey: 'userId', as: 'userContacts' });
-Contact.belongsTo(User, { foreignKey: 'userId' });
-
-User.hasMany(Campaign, { foreignKey: 'userId' });
-Campaign.belongsTo(User, { foreignKey: 'userId' });
-
-User.hasMany(AutoReply, { foreignKey: 'userId' });
-AutoReply.belongsTo(User, { foreignKey: 'userId' });
-
-User.hasMany(Schedule, { foreignKey: 'userId' });
-Schedule.belongsTo(User, { foreignKey: 'userId' });
-
-User.hasMany(Project, { foreignKey: 'userId' });
-Project.belongsTo(User, { foreignKey: 'userId' });
-
-User.hasMany(Automation, { foreignKey: 'userId' });
-Automation.belongsTo(User, { foreignKey: 'userId' });
-
-Project.hasMany(Automation, { foreignKey: 'projectId' });
-Automation.belongsTo(Project, { foreignKey: 'projectId' });
-
-Automation.hasMany(AutomationStep, { foreignKey: 'automationId', as: 'steps' });
-AutomationStep.belongsTo(Automation, { foreignKey: 'automationId' });
-
-Automation.hasMany(AutomationLog, { foreignKey: 'automationId' });
-AutomationLog.belongsTo(Automation, { foreignKey: 'automationId' });
-
-User.hasMany(GlobalVar, { foreignKey: 'userId' });
-GlobalVar.belongsTo(User, { foreignKey: 'userId' });
-
-User.hasMany(Subscription, { foreignKey: 'userId' });
-Subscription.belongsTo(User, { foreignKey: 'userId' });
-
-User.hasMany(SupportTicket, { foreignKey: 'userId' });
-SupportTicket.belongsTo(User, { foreignKey: 'userId' });
+const SupportTicket = mongoose.model('SupportTicket', supportTicketSchema);
 
 module.exports = {
-  sequelize,
   User,
   Contact,
   Campaign,

@@ -1,11 +1,11 @@
 // routes/groups.js
 const express = require('express');
 const protect = require('../middleware/auth');
-const Contact = require('../models/Contact');
+const { Contact } = require('../models');
 const router = express.Router();
 
 router.get('/', protect, async (req, res) => {
-  const client = req.app.get('getClientForUser')(req.user.id, req.user.role === 'superadmin');
+  const client = req.app.get('getClientForUser')(req.user._id, req.user.role === 'superadmin');
   if (!client || !client.info) return res.status(400).json({ message: 'WhatsApp is not completely connected. Scan QR first.' });
   try {
     // Primary: Use whatsapp-web.js getChats() API — reliable, works without lazy loading
@@ -44,7 +44,7 @@ router.get('/', protect, async (req, res) => {
 });
 
 router.get('/:groupId/participants', protect, async (req, res) => {
-  const client = req.app.get('getClientForUser')(req.user.id, req.user.role === 'superadmin');
+  const client = req.app.get('getClientForUser')(req.user._id, req.user.role === 'superadmin');
   if (!client) return res.status(400).json({ message: 'WhatsApp not connected' });
   try {
     const chat = await client.getChatById(req.params.groupId);
@@ -75,7 +75,7 @@ router.get('/:groupId/participants', protect, async (req, res) => {
 
 // Save group participants as contacts
 router.post('/:groupId/save', protect, async (req, res) => {
-  const client = req.app.get('getClientForUser')(req.user.id, req.user.role === 'superadmin');
+  const client = req.app.get('getClientForUser')(req.user._id, req.user.role === 'superadmin');
   if (!client) return res.status(400).json({ message: 'WhatsApp not connected' });
   try {
     const chat = await client.getChatById(req.params.groupId);
@@ -92,18 +92,22 @@ router.post('/:groupId/save', protect, async (req, res) => {
         phone = p.id.user || (typeof p.id === 'string' ? p.id.split('@')[0] : p.id._serialized?.split('@')[0]);
       }
       return {
-        userId: req.user.id,
+        userId: req.user._id,
         phone: phone,
         group: groupName,
         source: 'group_grab',
       };
     }).filter(d => d.phone && d.phone !== 'Unknown');
 
-    // Bulk create with update on duplicate to avoid duplicates and update group name if moved
-    const result = await Contact.bulkCreate(docs, { 
-      updateOnDuplicate: ['group', 'source'],
-      ignoreDuplicates: false 
-    });
+    if (docs.length > 0) {
+        await Contact.bulkWrite(docs.map(doc => ({
+            updateOne: {
+                filter: { userId: doc.userId, phone: doc.phone },
+                update: { $set: doc },
+                upsert: true
+            }
+        })));
+    }
 
     res.json({ saved: docs.length });
   } catch (e) {

@@ -24,17 +24,8 @@ const PLANS_FILE = path.join(__dirname, '../data/plans.json');
 // Default Plans
 let defaultPlans = {
     // User Plans
-    'user_monthly': { label: 'User Monthly', amount: 600, days: 30, type: 'user', features: ['Unlimited WhatsApp Sending', 'Group Messaging', 'Auto Reply', 'Basic Support'] },
-    'user_quarterly': { label: 'User Quarterly', amount: 129900, days: 90, type: 'user', features: ['All Monthly Features', 'Group Member Grabber', 'Advance Campaign Scheduling', 'Priority Support'] },
-    'user_yearly': { label: 'User Yearly', amount: 449900, days: 365, type: 'user', features: ['Everything in Quarterly', '12 Months Access', 'Dedicated Account Manager', 'Premium Priority Support'] },
-    // Admin Plans
-    'admin_monthly': { label: 'Admin Monthly', amount: 300, days: 30, type: 'admin', features: ['Unlimited Campaigns', 'Up to 5 Sub Accounts', 'Group Messaging', 'Auto Reply', 'Priority Support'] },
-    'admin_quarterly': { label: 'Admin Quarterly', amount: 259900, days: 90, type: 'admin', features: ['Unlimited Campaigns', 'Up to 5 Sub Accounts', 'Group Messaging', 'Auto Reply', 'Priority Support'] },
-    'admin_yearly': { label: 'Admin Yearly', amount: 899900, days: 365, type: 'admin', features: ['Unlimited Campaigns', 'Up to 5 Sub Accounts', 'Group Messaging', 'Auto Reply', 'Dedicated Manager'] },
-    // Sub Account Plans (Free)
-    'subaccount_monthly': { label: 'Sub Account Monthly', amount: 0, days: 30, type: 'subaccount', features: ['Bulk Campaigns', 'Group Messaging', 'Auto Reply', 'Contact Management'] },
-    'subaccount_quarterly': { label: 'Sub Account Quarterly', amount: 0, days: 90, type: 'subaccount', features: ['Bulk Campaigns', 'Group Messaging', 'Auto Reply', 'Reporting Tools'] },
-    'subaccount_yearly': { label: 'Sub Account Yearly', amount: 0, days: 365, type: 'subaccount', features: ['All Sub Account Features', 'No Message Limits', 'Premium Support'] },
+    'user_monthly': { label: 'User Monthly', amount: 600, days: 30, type: 'user', features: ['Unlimited WhatsApp Sending', 'Group Messaging', 'Auto Reply', 'Group Member Grabber', 'Advance Campaign Scheduling', 'Premium Priority Support'] },
+    'user_quarterly': { label: 'User Quarterly', amount: 129900, days: 90, type: 'user', features: ['Unlimited WhatsApp Sending', 'Group Messaging', 'Auto Reply', 'Group Member Grabber', 'Advance Campaign Scheduling', 'Premium Priority Support'] },
 };
 
 let PLANS = { ...defaultPlans };
@@ -46,7 +37,17 @@ try {
     }
     if (fs.existsSync(PLANS_FILE)) {
         const savedData = JSON.parse(fs.readFileSync(PLANS_FILE, 'utf8'));
-        PLANS = { ...PLANS, ...savedData }; // Merge configs
+        // Only load and merge plans that are defined in defaultPlans
+        PLANS = {};
+        for (const key of Object.keys(defaultPlans)) {
+            if (savedData[key]) {
+                PLANS[key] = { ...defaultPlans[key], ...savedData[key] };
+            } else {
+                PLANS[key] = defaultPlans[key];
+            }
+        }
+        // Auto-save cleaned configuration back to file
+        fs.writeFileSync(PLANS_FILE, JSON.stringify(PLANS, null, 2));
     }
 } catch (e) {
     console.error('Failed to load plans file:', e);
@@ -116,9 +117,7 @@ router.patch('/plan-config', protect, async (req, res) => {
 
 // GET /api/payments/status  – current user subscription
 router.get('/status', protect, async (req, res) => {
-    const user = await User.findByPk(req.user.id, {
-        attributes: ['id', 'name', 'email', 'isAdmin', 'subStatus', 'subExpiry'],
-    });
+    const user = await User.findById(req.user._id).select('name email isAdmin subStatus subExpiry');
     res.json({
         isAdmin: user.isAdmin,
         subStatus: user.subStatus,
@@ -139,13 +138,13 @@ router.post('/create-order', protect, async (req, res) => {
         const order = await razorpay.orders.create({
             amount: planData.amount,
             currency: 'INR',
-            receipt: `sub_${req.user.id}_${Date.now()}`,
-            notes: { userId: String(req.user.id), plan },
+            receipt: `r_${req.user._id}_${Math.floor(Date.now() / 1000)}`,
+            notes: { userId: String(req.user._id), plan },
         });
 
         // Save pending subscription
         await Subscription.create({
-            userId: req.user.id,
+            userId: req.user._id,
             plan,
             amount: planData.amount,
             status: 'pending',
@@ -159,8 +158,8 @@ router.post('/create-order', protect, async (req, res) => {
             keyId: process.env.RAZORPAY_KEY_ID,
         });
     } catch (e) {
-        console.error('Razorpay order error:', e.message);
-        res.status(500).json({ message: e.message });
+        console.error('Razorpay order error:', e);
+        res.status(500).json({ message: e.message || (e.error && e.error.description) || 'Razorpay order creation failed' });
     }
 });
 
@@ -184,30 +183,31 @@ router.post('/verify', protect, async (req, res) => {
         const endDate = new Date(Date.now() + planData.days * 24 * 60 * 60 * 1000);
 
         // Update subscription record
-        await Subscription.update(
-            { status: 'paid', razorpayPaymentId: razorpay_payment_id, razorpaySignature: razorpay_signature, startDate, endDate },
-            { where: { razorpayOrderId: razorpay_order_id } }
+        await Subscription.updateOne(
+            { razorpayOrderId: razorpay_order_id },
+            { status: 'paid', razorpayPaymentId: razorpay_payment_id, razorpaySignature: razorpay_signature, startDate, endDate }
         );
 
         // Activate user and set role based on plan
-        await User.update(
+        await User.updateOne(
+            { _id: req.user._id },
             {
                 subStatus: 'active',
                 subExpiry: endDate,
+                activePlan: plan,
                 isAdmin: planData.type === 'admin' // Set Admin role if admin plan purchased
-            },
-            { where: { id: req.user.id } }
+            }
         );
 
         res.json({ message: 'Payment verified! Subscription activated.', subExpiry: endDate });
 
         // Sync to Google Sheets (Async)
-        const user = await User.findByPk(req.user.id);
+        const user = await User.findById(req.user._id);
         syncToSheets(user).catch(e => console.error('Sheet sync failed:', e.message));
 
         // Sync payment details specifically
         syncPayments({
-            userId: req.user.id,
+            userId: req.user._id,
             name: user.name,
             email: user.email,
             whatsappNumber: user.whatsappNumber,
