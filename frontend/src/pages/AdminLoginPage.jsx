@@ -13,6 +13,18 @@ export default function AdminLoginPage() {
     const [showPassword, setShowPassword] = useState(false);
     const [formData, setFormData] = useState({ email: '', password: '', otp: '' });
 
+    const handleResendOtp = async () => {
+        setLoading(true);
+        try {
+            await adminLogin(formData.email, formData.password);
+            toast.success('A new Admin OTP has been sent! 🔒');
+        } catch (err) {
+            toast.error(err.response?.data?.message || err.message || 'Failed to resend OTP');
+        } finally {
+            setLoading(false);
+        }
+    };
+
     const handleSubmit = async (e) => {
         e.preventDefault();
         setLoading(true);
@@ -119,9 +131,14 @@ export default function AdminLoginPage() {
                                         style={{ width: '100%', padding: '16px 16px 16px 48px', background: '#27272a', border: '1px solid #f59e0b55', borderRadius: 12, outline: 'none', color: '#fff', fontSize: 24, letterSpacing: '8px', fontWeight: 800 }}
                                     />
                                 </div>
-                                <button type="button" onClick={() => setStep(1)} style={{ background: 'none', border: 'none', color: 'var(--text3)', fontSize: 13, cursor: 'pointer', marginTop: 12 }}>
-                                    ← Change Email
-                                </button>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 }}>
+                                    <button type="button" onClick={() => setStep(1)} style={{ background: 'none', border: 'none', color: 'var(--text3)', fontSize: 13, cursor: 'pointer', padding: 0 }}>
+                                        ← Change Email
+                                    </button>
+                                    <button type="button" onClick={handleResendOtp} disabled={loading} style={{ background: 'none', border: 'none', color: '#f59e0b', fontSize: 13, cursor: 'pointer', fontWeight: 600, padding: 0 }}>
+                                        {loading ? 'Sending...' : 'Resend OTP'}
+                                    </button>
+                                </div>
                             </div>
                         )}
 

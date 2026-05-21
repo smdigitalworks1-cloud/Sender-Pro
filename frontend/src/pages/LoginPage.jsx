@@ -15,6 +15,18 @@ export default function LoginPage() {
 
   const update = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
+  const handleResendOtp = async () => {
+    setLoading(true);
+    try {
+      await login(form.email, form.password);
+      toast.success('A new OTP has been sent to your email! 📧');
+    } catch (err) {
+      toast.error(err.response?.data?.message || err.message || 'Failed to resend OTP');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
@@ -131,9 +143,14 @@ export default function LoginPage() {
                   <ShieldCheck size={18} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: '#7c3aed' }} />
                   <input className="input" style={{ paddingLeft: 40, fontSize: 20, letterSpacing: '8px', fontWeight: 800, color: '#7c3aed' }} placeholder="000000" maxLength={6} value={form.otp} onChange={e => update('otp', e.target.value)} required />
                 </div>
-                <button type="button" onClick={() => setStep(1)} style={{ background: 'none', border: 'none', color: 'var(--text3)', fontSize: 13, cursor: 'pointer', marginTop: 12 }}>
-                  ← Back to Email
-                </button>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 }}>
+                  <button type="button" onClick={() => setStep(1)} style={{ background: 'none', border: 'none', color: 'var(--text3)', fontSize: 13, cursor: 'pointer', padding: 0 }}>
+                    ← Back to Email
+                  </button>
+                  <button type="button" onClick={handleResendOtp} disabled={loading} style={{ background: 'none', border: 'none', color: 'var(--accent3)', fontSize: 13, cursor: 'pointer', fontWeight: 600, padding: 0 }}>
+                    {loading ? 'Sending...' : 'Resend OTP'}
+                  </button>
+                </div>
               </div>
             )}
 
