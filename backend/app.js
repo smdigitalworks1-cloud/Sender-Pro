@@ -35,6 +35,27 @@ if (process.env.NODE_ENV !== 'production') {
 
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
+// ── Database Connection Middleware for Serverless ────────────
+const mongoose = require('mongoose');
+app.use(async (req, res, next) => {
+    // If connected, proceed
+    if (mongoose.connection.readyState === 1) {
+        return next();
+    }
+    try {
+        console.log("🔄 Database connection not fully established. Re-attempting/awaiting connection...");
+        await connectDB();
+        next();
+    } catch (err) {
+        console.error("❌ Database connection middleware failed:", err.message);
+        return res.status(500).json({
+            success: false,
+            message: "Database connection failed! Please ensure your MongoDB Atlas IP Whitelist (Network Access) is set to 'Allow Access From Anywhere' (0.0.0.0/0) and that the Vercel MONGO_URI environment variable is correct.",
+            error: err.message
+        });
+    }
+});
+
 // ── Routes ──────────────────────────────────────────────────
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/contacts', require('./routes/contacts'));
