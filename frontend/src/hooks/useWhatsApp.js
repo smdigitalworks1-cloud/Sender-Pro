@@ -6,10 +6,10 @@ const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || (process.env.NODE_ENV ===
 
 export function useWhatsApp() {
   const { user } = useAuth();
-  const [status, setStatus] = useState('disconnected');
+  const [status, setStatus] = useState(localStorage.getItem('wa_phone') ? 'connected' : 'disconnected');
   const [errorMsg, setErrorMsg] = useState(null);
   const [qrCode, setQrCode] = useState(null);
-  const [phone, setPhone] = useState(null);
+  const [phone, setPhone] = useState(localStorage.getItem('wa_phone') || null);
   const [waName, setWaName] = useState(null);
   const socketRef = useRef(null);
 
