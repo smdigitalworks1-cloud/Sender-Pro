@@ -217,6 +217,30 @@ function _doInit(guid, userId, isSuper) {
 
     waStatuses.set(guid, 'disconnected');
     
+    // If explicitly logging out or if disconnected due to phone logouts/expired credentials
+    if (reason === 'LOGOUT' || status === 'logging_out') {
+      try {
+        const { User, SuperAdmin } = require('./models');
+        const account = isSuper ? await SuperAdmin.findById(userId) : await User.findById(userId);
+        if (account) {
+          account.whatsappNumber = null;
+          await account.save();
+          console.log(`✅ Database WhatsApp number cleared for [${guid}] on logout`);
+        }
+      } catch (err) {
+        console.error('Error clearing database whatsapp number:', err.message);
+      }
+
+      try {
+        if (fs.existsSync(sessionDir)) {
+          fs.rmSync(sessionDir, { recursive: true, force: true });
+          console.log(`🧹 Deleted session folder for [${guid}] on logout`);
+        }
+      } catch (e) {
+        console.error(`Failed to delete session folder for [${guid}]:`, e.message);
+      }
+    }
+    
     // Explicitly destroy client to close active Puppeteer browser and release file locks
     try {
       console.log(`🧹 [disconnected] Terminating browser on disconnect for [${guid}]...`);
@@ -238,12 +262,35 @@ function _doInit(guid, userId, isSuper) {
 
   client.on('auth_failure', async (msg) => {
     console.error(`🔐 Auth failure [${guid}]:`, msg);
-    waStatuses.set(guid, 'auth_failure');
+    waStatuses.set(guid, 'disconnected');
+
+    try {
+      const { User, SuperAdmin } = require('./models');
+      const account = isSuper ? await SuperAdmin.findById(userId) : await User.findById(userId);
+      if (account) {
+        account.whatsappNumber = null;
+        await account.save();
+        console.log(`✅ Database WhatsApp number cleared for [${guid}] due to auth failure`);
+      }
+    } catch (err) {
+      console.error('Error clearing database whatsapp number:', err.message);
+    }
+
+    const sessionDir = path.join(__dirname, '.wwebjs_auth', `session-${guid}`);
+    try {
+      if (fs.existsSync(sessionDir)) {
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+        console.log(`🧹 Deleted corrupt session folder for [${guid}] due to auth failure`);
+      }
+    } catch (e) {
+      console.error(`Failed to delete corrupt session folder for [${guid}]:`, e.message);
+    }
+
     try {
       await client.destroy();
     } catch (e) {}
     waClients.delete(guid);
-    emitToUser(guid, 'whatsapp:status', { status: 'auth_failure' });
+    emitToUser(guid, 'whatsapp:status', { status: 'disconnected', reason: 'auth_failure' });
   });
 
   client.on('message', async (msg) => {
@@ -375,6 +422,8 @@ io.on('connection', (socket) => {
     const isSuper = role === 'superadmin';
     const guid = isSuper ? `sa_${userId}` : `user_${userId}`;
 
+    console.log(`🔌 [disconnect] Explicit disconnect requested for [${guid}]`);
+
     // Mark as explicitly logging out so disconnected handler knows not to restart it
     waStatuses.set(guid, 'logging_out');
 
@@ -384,6 +433,31 @@ io.on('connection', (socket) => {
       try { await client.destroy(); } catch { }
       waClients.delete(guid);
     }
+
+    // Clear whatsappNumber in DB
+    try {
+      const { User, SuperAdmin } = require('./models');
+      const account = isSuper ? await SuperAdmin.findById(userId) : await User.findById(userId);
+      if (account) {
+        account.whatsappNumber = null;
+        await account.save();
+        console.log(`✅ Database WhatsApp number cleared for [${guid}] on explicit disconnect`);
+      }
+    } catch (err) {
+      console.error('Error clearing database whatsapp number:', err.message);
+    }
+
+    // Delete session folder
+    const sessionDir = path.join(__dirname, '.wwebjs_auth', `session-${guid}`);
+    try {
+      if (fs.existsSync(sessionDir)) {
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+        console.log(`🧹 Deleted session folder for [${guid}] on explicit disconnect`);
+      }
+    } catch (e) {
+      console.error(`Failed to delete session folder for [${guid}]:`, e.message);
+    }
+
     waStatuses.set(guid, 'disconnected');
     emitToUser(guid, 'whatsapp:status', { status: 'disconnected' });
   });
