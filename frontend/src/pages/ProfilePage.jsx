@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 
-const API = '';
+const API = process.env.REACT_APP_API_URL ? process.env.REACT_APP_API_URL.replace(/\/api$/, '') : '';
 
 const STATUS_CONFIG = {
     active: { color: '#22c55e', bg: 'rgba(34,197,94,0.1)', icon: <CheckCircle size={16} />, label: 'Active' },

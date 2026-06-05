@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { Zap, Star, Crown, Check, Loader, Calendar } from 'lucide-react';
 import toast from 'react-hot-toast';
 
-const API = '';
+const API = process.env.REACT_APP_API_URL ? process.env.REACT_APP_API_URL.replace(/\/api$/, '') : '';
 
 const CATEGORY_INFO = {
     user: {

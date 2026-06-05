@@ -8,7 +8,7 @@ import SupportPage from './SupportPage';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 
-const API = '';
+const API = process.env.REACT_APP_API_URL ? process.env.REACT_APP_API_URL.replace(/\/api$/, '') : '';
 
 const STATUS_BADGE = {
     active: { bg: 'rgba(34,197,94,0.12)', color: '#22c55e', label: 'Active' },
@@ -714,7 +714,7 @@ function PlansPricingSection({ token }) {
     const [editingFeature, setEditingFeature] = useState({});
 
     useEffect(() => {
-        fetch('/api/payments/plan-config', { headers })
+        fetch(`${API}/api/payments/plan-config`, { headers })
             .then(r => r.json())
             .then(data => {
                 if (Array.isArray(data) && data.length > 0) {
@@ -731,7 +731,7 @@ function PlansPricingSection({ token }) {
     const savePlan = async (plan) => {
         setSaving(plan.id);
         try {
-            const res = await fetch('/api/payments/plan-config', {
+            const res = await fetch(`${API}/api/payments/plan-config`, {
                 method: 'PATCH', headers,
                 body: JSON.stringify({
                     planId: plan.id,
@@ -750,7 +750,7 @@ function PlansPricingSection({ token }) {
         setSyncing(true);
         try {
             for (const p of plans) {
-                await fetch('/api/payments/plan-config', {
+                await fetch(`${API}/api/payments/plan-config`, {
                     method: 'PATCH', headers,
                     body: JSON.stringify({
                         planId: p.id,
@@ -863,7 +863,7 @@ function SettingsSection() {
     const [savingLimits, setSavingLimits] = useState(false);
 
     useEffect(() => {
-        fetch('/api/payments/plan-config', { headers })
+        fetch(`${API}/api/payments/plan-config`, { headers })
             .then(r => r.json())
             .then(data => {
                 setPlans(Array.isArray(data) ? data : []); // Always ensure it's an array
@@ -871,7 +871,7 @@ function SettingsSection() {
             })
             .catch(() => setPlansLoading(false));
 
-        fetch('/api/admin/limits', { headers })
+        fetch(`${API}/api/admin/limits`, { headers })
             .then(r => r.json())
             .then(data => {
                 if (data && typeof data === 'object' && !data.message) {
@@ -899,7 +899,7 @@ function SettingsSection() {
     const handlePriceUpdate = async (plan) => {
         setSavingPlan(plan.id);
         try {
-            const res = await fetch('/api/payments/plan-config', {
+            const res = await fetch(`${API}/api/payments/plan-config`, {
                 method: 'PATCH',
                 headers,
                 body: JSON.stringify({ planId: plan.id, amountInRupees: plan.amountInRupees }),
@@ -914,7 +914,7 @@ function SettingsSection() {
     const handleLimitsUpdate = async () => {
         setSavingLimits(true);
         try {
-            const res = await fetch('/api/admin/limits', {
+            const res = await fetch(`${API}/api/admin/limits`, {
                 method: 'PATCH',
                 headers,
                 body: JSON.stringify(limits),

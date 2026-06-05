@@ -3,7 +3,7 @@ import { useAuth } from '../context/AuthContext';
 import { MessageCircle, CheckCircle, Clock, Send, ShieldAlert, FileText, User } from 'lucide-react';
 import toast from 'react-hot-toast';
 
-const API = '';
+const API = process.env.REACT_APP_API_URL ? process.env.REACT_APP_API_URL.replace(/\/api$/, '') : '';
 
 export default function SupportPage({ hideHeader = false }) {
     const { user } = useAuth();

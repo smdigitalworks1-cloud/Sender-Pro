@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import api from '../utils/api';
 
 const AuthCtx = createContext(null);
+const API = process.env.REACT_APP_API_URL ? process.env.REACT_APP_API_URL.replace(/\/api$/, '') : '';
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
@@ -14,7 +15,7 @@ export function AuthProvider({ children }) {
     try {
       const token = localStorage.getItem('token');
       if (!token) return;
-      const res = await fetch('/api/payments/status', {
+      const res = await fetch(`${API}/api/payments/status`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) return;
@@ -31,7 +32,7 @@ export function AuthProvider({ children }) {
     try {
       const token = localStorage.getItem('token');
       if (!token) return;
-      const res = await fetch('/api/auth/me', {
+      const res = await fetch(`${API}/api/auth/me`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) return;

@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Lock, Zap, Star, Crown, X, ArrowRight } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
-const API = '';
+const API = process.env.REACT_APP_API_URL ? process.env.REACT_APP_API_URL.replace(/\/api$/, '') : '';
 
 export default function SubscriptionPopup({ onClose }) {
     const navigate = useNavigate();
