@@ -699,5 +699,14 @@ async function bootstrap() {
 }
 bootstrap();
 
+const { exec } = require('child_process');
+exec('which chromium || which chromium-browser || echo "not found"', (err, stdout, stderr) => {
+    console.log('🔍 System Chromium path:', stdout.trim());
+});
+exec('chromium --version || chromium-browser --version || echo "no version"', (err, stdout, stderr) => {
+    console.log('🔍 System Chromium version:', stdout.trim());
+});
+console.log('🔍 PUPPETEER_EXECUTABLE_PATH:', process.env.PUPPETEER_EXECUTABLE_PATH);
+
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => console.log(`🚀 Server on http://localhost:${PORT}`));
