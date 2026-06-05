@@ -166,6 +166,10 @@ function _doInit(guid, userId, isSuper) {
         '--disable-default-apps',
         '--no-zygote',
         '--disable-accelerated-2d-canvas',
+        '--disable-renderer-backgrounding',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--js-flags=--max-old-space-size=256',
       ],
     },
   });
