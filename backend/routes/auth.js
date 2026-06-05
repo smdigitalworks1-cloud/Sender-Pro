@@ -97,16 +97,14 @@ router.post('/login', async (req, res) => {
 
     // Send OTP Email
     console.log(`\n🔐 LOGIN OTP for ${user.email}: ${otp} (Expires in 5 mins)\n`);
-    try {
-      await sendEmail({
-        email: user.email,
-        subject: 'Login OTP - Sender Pro',
-        message: `Your login OTP is: ${otp}. It will expire in 5 minutes.`,
-        html: `<h3>Login Verification</h3><p>Your login OTP is: <strong style="font-size: 24px; color: #7c3aed;">${otp}</strong></p><p>This code will expire in 5 minutes.</p>`
-      });
-    } catch (e) {
+    sendEmail({
+      email: user.email,
+      subject: 'Login OTP - Sender Pro',
+      message: `Your login OTP is: ${otp}. It will expire in 5 minutes.`,
+      html: `<h3>Login Verification</h3><p>Your login OTP is: <strong style="font-size: 24px; color: #7c3aed;">${otp}</strong></p><p>This code will expire in 5 minutes.</p>`
+    }).catch(e => {
       console.error('OTP email send failed (check SMTP config):', e.message);
-    }
+    });
 
     res.json({ message: 'OTP sent to email', requiresOtp: true });
   } catch (e) {
@@ -163,16 +161,14 @@ router.post('/admin-login', async (req, res) => {
 
     // Send OTP Email
     console.log(`\n👑 ADMIN LOGIN OTP for ${admin.email}: ${otp} (Expires in 5 mins)\n`);
-    try {
-      await sendEmail({
-        email: admin.email,
-        subject: 'Super Admin Login OTP',
-        message: `Your Super Admin login OTP is: ${otp}.`,
-        html: `<h3>Admin Verification</h3><p>Your Super Admin login OTP is: <strong style="font-size: 24px; color: #f59e0b;">${otp}</strong></p><p>This code will expire in 5 minutes.</p>`
-      });
-    } catch (e) {
+    sendEmail({
+      email: admin.email,
+      subject: 'Super Admin Login OTP',
+      message: `Your Super Admin login OTP is: ${otp}.`,
+      html: `<h3>Admin Verification</h3><p>Your Super Admin login OTP is: <strong style="font-size: 24px; color: #f59e0b;">${otp}</strong></p><p>This code will expire in 5 minutes.</p>`
+    }).catch(e => {
       console.error('Admin OTP email send failed:', e.message);
-    }
+    });
 
     res.json({ message: 'OTP sent to email', requiresOtp: true });
   } catch (e) {
