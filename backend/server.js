@@ -1,3 +1,4 @@
+const originalPort = process.env.PORT; // Capture environment PORT (e.g. from Railway)
 const app = require('./app');
 const http = require('http');
 const connectDB = require('./config/database');
@@ -8,6 +9,7 @@ const qrcode = require('qrcode');
 const cron = require('node-cron');
 const path = require('path');
 require('dotenv').config({ override: true });
+if (originalPort) process.env.PORT = originalPort; // Restore environment PORT to prevent override
 
 const server = http.createServer(app);
 const io = new Server(server, {

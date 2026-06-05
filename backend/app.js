@@ -1,7 +1,9 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const originalPort = process.env.PORT; // Capture environment PORT (e.g. from Railway)
 require('dotenv').config({ override: true });
+if (originalPort) process.env.PORT = originalPort; // Restore it to avoid override
 const connectDB = require('./config/database');
 
 // Trigger MongoDB connection and seed database in serverless/production environments
