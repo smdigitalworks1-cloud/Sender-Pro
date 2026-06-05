@@ -1,0 +1,20 @@
+# Railway Nixpacks configuration for Puppeteer / Chromium
+[phases.setup]
+nixPkgs = [
+  "nodejs",
+  "chromium",
+  "glib",
+  "nss",
+  "nspr",
+  "atk",
+  "at-spi2-atk",
+  "cups",
+  "dbus",
+  "libdrm",
+  "gdk-pixbuf",
+  "gtk3",
+  "pango",
+  "cairo",
+  "gbm",
+  "alsa-lib"
+]
