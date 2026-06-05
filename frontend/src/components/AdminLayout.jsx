@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { Crown, LogOut, ChevronLeft, ChevronRight, Zap, User, HeadphonesIcon } from 'lucide-react';
+import { useWhatsApp } from '../hooks/useWhatsApp';
 
 const adminNav = [
     { to: '/admin', icon: Crown, label: 'Admin Portal' },
@@ -12,10 +13,19 @@ const adminNav = [
 
 export default function AdminLayout() {
     const { logout, user } = useAuth();
+    const { disconnect } = useWhatsApp();
     const navigate = useNavigate();
     const [collapsed, setCollapsed] = useState(false);
 
-    const handleLogout = () => { logout(); navigate('/login'); };
+    const handleLogout = () => {
+        try {
+            disconnect();
+        } catch (err) {
+            console.error('Error disconnecting WhatsApp on admin logout:', err);
+        }
+        logout();
+        navigate('/login');
+    };
 
     return (
         <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>

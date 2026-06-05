@@ -33,7 +33,7 @@ const FREE_PAGES = ['/pricing', '/profile', '/support'];
 
 export default function Layout() {
   const { user, logout, isSubscribed } = useAuth();
-  const { status, phone } = useWhatsApp();
+  const { status, phone, disconnect } = useWhatsApp();
   const navigate = useNavigate();
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
@@ -71,7 +71,15 @@ export default function Layout() {
     !isSubscribed &&
     !FREE_PAGES.some(p => location.pathname.startsWith(p));
 
-  const handleLogout = () => { logout(); navigate('/login'); };
+  const handleLogout = () => {
+    try {
+      disconnect();
+    } catch (err) {
+      console.error('Error disconnecting WhatsApp on logout:', err);
+    }
+    logout();
+    navigate('/login');
+  };
 
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
