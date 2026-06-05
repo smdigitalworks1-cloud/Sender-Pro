@@ -64,14 +64,26 @@ router.get('/:groupId/participants', protect, async (req, res) => {
   try {
     let formatted = null;
 
-    // 1. Primary Fast: Direct browser Store evaluation
+    // 1. Primary Fast: Direct browser Store evaluation with metadata auto-fetch
     try {
-      formatted = await client.pupPage.evaluate((groupId) => {
+      formatted = await client.pupPage.evaluate(async (groupId) => {
         if (!window.Store || !window.Store.Chat) return null;
         const chat = window.Store.Chat.get(groupId);
-        if (!chat || !chat.groupMetadata) return null;
+        if (!chat) return null;
         
-        const participants = chat.groupMetadata.participants.models || chat.groupMetadata.participants || [];
+        let metadata = chat.groupMetadata;
+        // If metadata is not loaded, force load it from WhatsApp Web store
+        if (!metadata && window.Store.GroupMetadata) {
+          try {
+            metadata = await window.Store.GroupMetadata.find(groupId);
+          } catch (e) {
+            console.error('Failed to fetch missing group metadata in browser:', e.message || e);
+          }
+        }
+
+        if (!metadata) return null;
+        
+        const participants = metadata.participants.models || metadata.participants || [];
         return participants.map(p => {
           const id = p.id?._serialized || p.id || '';
           const phone = id.split('@')[0] || '';
@@ -94,7 +106,20 @@ router.get('/:groupId/participants', protect, async (req, res) => {
         return res.status(404).json({ message: 'Group not found' });
       }
 
-      const participants = chat.participants || [];
+      // Force load groupMetadata if missing in the returned chat object
+      let participants = chat.participants || [];
+      if (participants.length === 0 && chat.id) {
+        try {
+          // Trigger lazy getter or fetch metadata
+          const meta = await chat.groupMetadata;
+          if (meta && meta.participants) {
+            participants = meta.participants;
+          }
+        } catch (err) {
+          console.error('[GroupGrabber] Fallback metadata load failed:', err.message);
+        }
+      }
+
       formatted = participants.map(p => {
         let phone = '';
         if (p.id) {
@@ -124,21 +149,32 @@ router.post('/:groupId/save', protect, async (req, res) => {
     let participants = [];
     let groupName = 'Unknown Group';
 
-    // 1. Primary Fast: Direct browser Store evaluation
+    // 1. Primary Fast: Direct browser Store evaluation with metadata auto-fetch
     try {
-      const data = await client.pupPage.evaluate((groupId) => {
+      const data = await client.pupPage.evaluate(async (groupId) => {
         if (!window.Store || !window.Store.Chat) return null;
         const chat = window.Store.Chat.get(groupId);
         if (!chat) return null;
+        
+        let metadata = chat.groupMetadata;
+        if (!metadata && window.Store.GroupMetadata) {
+          try {
+            metadata = await window.Store.GroupMetadata.find(groupId);
+          } catch (e) {
+            console.error('Failed to fetch missing group metadata for save:', e.message || e);
+          }
+        }
+
         const name = chat.name || chat.formattedTitle || 'Unknown Group';
-        const parts = (chat.groupMetadata?.participants?.models || chat.groupMetadata?.participants || []).map(p => {
+        const parts = metadata ? (metadata.participants?.models || metadata.participants || []).map(p => {
           const id = p.id?._serialized || p.id || '';
           return id.split('@')[0] || '';
-        });
+        }) : [];
+        
         return { name, parts };
       }, req.params.groupId);
 
-      if (data) {
+      if (data && data.parts.length > 0) {
         groupName = data.name;
         participants = data.parts.map(phone => ({ id: { user: phone } }));
       }
@@ -154,7 +190,19 @@ router.post('/:groupId/save', protect, async (req, res) => {
         return res.status(404).json({ message: 'Group not found' });
       }
       groupName = chat.name || 'Unknown Group';
-      participants = chat.participants || [];
+      
+      let chatParticipants = chat.participants || [];
+      if (chatParticipants.length === 0) {
+        try {
+          const meta = await chat.groupMetadata;
+          if (meta && meta.participants) {
+            chatParticipants = meta.participants;
+          }
+        } catch (err) {
+          console.error('[GroupGrabber] Fallback save metadata load failed:', err.message);
+        }
+      }
+      participants = chatParticipants;
     }
 
     const docs = participants.map(p => {
