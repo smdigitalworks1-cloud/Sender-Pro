@@ -152,6 +152,7 @@ function _doInit(guid, userId, isSuper) {
     },
     puppeteer: {
       headless: "new",
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
       protocolTimeout: 180000, // ⏱️ 3 min timeout to avoid ProtocolError crashes
       args: [
         '--no-sandbox',
