@@ -89,24 +89,16 @@ router.post('/login', async (req, res) => {
     if (!user || !(await user.matchPassword(password)))
       return res.status(401).json({ message: 'Invalid email or password' });
 
-    // Generate 6-digit OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    user.otp = otp;
-    user.otpExpires = Date.now() + 5 * 60 * 1000; // 5 mins
-    await user.save();
-
-    // Send OTP Email
-    console.log(`\n🔐 LOGIN OTP for ${user.email}: ${otp} (Expires in 5 mins)\n`);
-    sendEmail({
-      email: user.email,
-      subject: 'Login OTP - Sender Pro',
-      message: `Your login OTP is: ${otp}. It will expire in 5 minutes.`,
-      html: `<h3>Login Verification</h3><p>Your login OTP is: <strong style="font-size: 24px; color: #7c3aed;">${otp}</strong></p><p>This code will expire in 5 minutes.</p>`
-    }).catch(e => {
-      console.error('OTP email send failed (check SMTP config):', e.message);
+    res.json({
+      id: user._id, name: user.name, email: user.email,
+      whatsappNumber: user.whatsappNumber || null,
+      isAdmin: user.isAdmin, parentId: user.parentId,
+      role: user.role || (user.isAdmin ? 'admin' : 'user'),
+      subStatus: user.subStatus || 'none',
+      subExpiry: user.subExpiry || null,
+      activePlan: user.activePlan || null,
+      token: sign(user._id, user.isAdmin)
     });
-
-    res.json({ message: 'OTP sent to email', requiresOtp: true });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -153,24 +145,10 @@ router.post('/admin-login', async (req, res) => {
     if (!admin || !(await admin.matchPassword(password)))
       return res.status(401).json({ message: 'Invalid admin email or password' });
 
-    // Generate 6-digit OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    admin.otp = otp;
-    admin.otpExpires = Date.now() + 5 * 60 * 1000; // 5 mins
-    await admin.save();
-
-    // Send OTP Email
-    console.log(`\n👑 ADMIN LOGIN OTP for ${admin.email}: ${otp} (Expires in 5 mins)\n`);
-    sendEmail({
-      email: admin.email,
-      subject: 'Super Admin Login OTP',
-      message: `Your Super Admin login OTP is: ${otp}.`,
-      html: `<h3>Admin Verification</h3><p>Your Super Admin login OTP is: <strong style="font-size: 24px; color: #f59e0b;">${otp}</strong></p><p>This code will expire in 5 minutes.</p>`
-    }).catch(e => {
-      console.error('Admin OTP email send failed:', e.message);
+    const token = jwt.sign({ id: admin._id, role: 'superadmin' }, process.env.JWT_SECRET, { expiresIn: '30d' });
+    res.json({
+      id: admin._id, name: admin.name, email: admin.email, role: 'superadmin', token
     });
-
-    res.json({ message: 'OTP sent to email', requiresOtp: true });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
