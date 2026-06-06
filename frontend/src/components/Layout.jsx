@@ -72,11 +72,6 @@ export default function Layout() {
     !FREE_PAGES.some(p => location.pathname.startsWith(p));
 
   const handleLogout = () => {
-    try {
-      disconnect();
-    } catch (err) {
-      console.error('Error disconnecting WhatsApp on logout:', err);
-    }
     logout();
     navigate('/login');
   };

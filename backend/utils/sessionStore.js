@@ -12,7 +12,12 @@ function addFilesToZip(zip, baseDir, currentDir = baseDir) {
     'Crashpad',
     'GPUCache',
     'Dictionaries',
-    'blob_storage'
+    'blob_storage',
+    'IndexedDB',
+    'BrowserMetrics',
+    'component_crx_cache',
+    'CertificateRevocation',
+    '.pma'
   ];
 
   for (const item of items) {
@@ -37,7 +42,9 @@ function addFilesToZip(zip, baseDir, currentDir = baseDir) {
       addFilesToZip(zip, baseDir, fullPath);
     } else {
       try {
-        zip.addLocalFile(fullPath, path.dirname(relativePath));
+        const fileData = fs.readFileSync(fullPath);
+        const zipEntryPath = relativePath.replace(/\\/g, '/');
+        zip.addFile(zipEntryPath, fileData);
       } catch (err) {
         console.error(`⚠️ [sessionStore] Skip packing file ${relativePath} due to lock/error:`, err.message);
       }

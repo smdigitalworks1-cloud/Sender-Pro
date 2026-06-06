@@ -81,6 +81,7 @@ const waStatuses = new Map(); // globalUid → status string
 const pendingInits = new Set(); // Tracks active initialization sequences to prevent concurrent double-initializations
 const statusTimestamps = new Map(); // globalUid → timestamp of last status change
 const qrTimeouts = new Map(); // globalUid → NodeJS.Timeout
+const authFailures = new Map(); // globalUid → retry count
 
 function updateStatus(guid, status, data = {}) {
   // Clear timeout if a terminal status is reached
@@ -247,9 +248,11 @@ async function _doInit(guid, userId, isSuper) {
 
   client.on('authenticated', () => {
     console.log(`🔐 [Auth] Client authenticated for [${guid}]`);
+    authFailures.delete(guid);
   });
 
   client.on('ready', async () => {
+    authFailures.delete(guid);
     try {
       const info = client.info;
       const connectedNumber = info.wid.user;
@@ -331,6 +334,28 @@ async function _doInit(guid, userId, isSuper) {
 
   client.on('auth_failure', async (msg) => {
     console.error(`❌ [Failure] Connection failed (auth_failure) for [${guid}]:`, msg);
+    
+    const attempts = (authFailures.get(guid) || 0) + 1;
+    authFailures.set(guid, attempts);
+
+    if (attempts < 3) {
+      console.warn(`🔐 [Auth] Temporary auth failure detected for [${guid}] (attempt ${attempts}/3). Retrying in 5s without session wipe...`);
+      updateStatus(guid, 'connecting', { error: `Connection failed: ${msg}. Retrying...` });
+      
+      try {
+        await client.destroy();
+      } catch (e) {}
+      waClients.delete(guid);
+
+      setTimeout(() => {
+        initWhatsApp(userId, isSuper);
+      }, 5000);
+      return;
+    }
+
+    // Persistent failure after 3 attempts -> Wipe session
+    console.error(`❌ [Failure] Persistent auth failure for [${guid}] after 3 attempts. Wiping session...`);
+    authFailures.delete(guid);
     updateStatus(guid, 'disconnected', { reason: 'auth_failure' });
 
     try {

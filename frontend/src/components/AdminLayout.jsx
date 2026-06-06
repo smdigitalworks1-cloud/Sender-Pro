@@ -18,11 +18,6 @@ export default function AdminLayout() {
     const [collapsed, setCollapsed] = useState(false);
 
     const handleLogout = () => {
-        try {
-            disconnect();
-        } catch (err) {
-            console.error('Error disconnecting WhatsApp on admin logout:', err);
-        }
         logout();
         navigate('/login');
     };
