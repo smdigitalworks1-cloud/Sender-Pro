@@ -683,6 +683,17 @@ export default function GroupAutomationPage() {
         } catch (err) { toast.error("Execution error"); }
     }
 
+    const deleteAutomation = async (a) => {
+        if (!window.confirm(`Are you sure you want to delete the automation "${a.name}"?`)) return;
+        try {
+            await api.delete(`/automations/${a.id}`);
+            toast.success("Automation deleted successfully");
+            loadAutomations(selectedProject.id);
+        } catch (err) {
+            toast.error(err.response?.data?.error || "Error deleting automation");
+        }
+    }
+
     // ==================
     // 3. Automation Builder View
     // ==================
@@ -1143,6 +1154,7 @@ export default function GroupAutomationPage() {
                                 )}
                                 <button className="btn btn-ghost" style={{ padding: '5px 10px', fontSize: 12, border: '1px solid var(--border)' }} onClick={() => handlePreview(a)}><FileText size={14} /> Preview</button>
                                 <button className="btn btn-ghost" style={{ padding: '5px 10px', fontSize: 12, border: '1px solid var(--border)' }} onClick={() => openAutomation(a)}><Settings size={14} /> Builder</button>
+                                <button className="btn btn-ghost" style={{ padding: '5px 10px', fontSize: 12, border: '1px solid var(--red)', color: 'var(--red)' }} onClick={() => deleteAutomation(a)}><Trash2 size={14} /> Delete</button>
                             </div>
                         </div>
                     ))}

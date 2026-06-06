@@ -237,4 +237,24 @@ router.get('/:id/logs', protect, async (req, res) => {
     }
 });
 
+// Delete automation
+router.delete('/:id', protect, async (req, res) => {
+    try {
+        const automationId = req.params.id;
+        
+        // Verify ownership
+        const automation = await Automation.findOne({ _id: automationId, userId: req.user._id });
+        if (!automation) return res.status(404).json({ error: 'Automation not found' });
+
+        // Delete steps, logs, and the automation document
+        await AutomationStep.deleteMany({ automationId });
+        await AutomationLog.deleteMany({ automationId });
+        await Automation.deleteOne({ _id: automationId });
+
+        res.json({ message: 'Automation deleted successfully', id: automationId });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 module.exports = router;
