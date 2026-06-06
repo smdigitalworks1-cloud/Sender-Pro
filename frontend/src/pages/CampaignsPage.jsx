@@ -19,7 +19,8 @@ export default function CampaignsPage() {
   const [form, setForm] = useState({ name: '', message: '', delay: 3, mediaUrl: '', phones: '', group: '' });
   const [selectedCampaign, setSelectedCampaign] = useState(null);
 
-  const load = async () => {
+  // Initial load — shows full-page spinner only on first visit
+  const initialLoad = async () => {
     setLoading(true);
     try {
       const [c, ct] = await Promise.all([api.get('/campaigns'), api.get('/contacts')]);
@@ -28,13 +29,22 @@ export default function CampaignsPage() {
     } finally { setLoading(false); }
   };
 
-  useEffect(() => { load(); }, []);
+  // Silent background refresh — updates data WITHOUT showing the loading spinner
+  const silentRefresh = async () => {
+    try {
+      const [c, ct] = await Promise.all([api.get('/campaigns'), api.get('/contacts')]);
+      setCampaigns(c.data);
+      setContacts(ct.data);
+    } catch (_) { /* ignore background errors */ }
+  };
 
-  // Auto-refresh running campaigns
+  useEffect(() => { initialLoad(); }, []);
+
+  // Auto-refresh running campaigns silently (no loading flash)
   useEffect(() => {
     const hasRunning = campaigns.some(c => c.status === 'running');
     if (!hasRunning) return;
-    const t = setInterval(load, 3000);
+    const t = setInterval(silentRefresh, 3000);
     return () => clearInterval(t);
   }, [campaigns]);
 
@@ -89,7 +99,7 @@ export default function CampaignsPage() {
     try {
       await api.post(`/campaigns/${id}/start`);
       toast.success('Campaign started!');
-      load();
+      silentRefresh();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Failed to start');
     }
@@ -99,7 +109,7 @@ export default function CampaignsPage() {
     try {
       await api.post(`/campaigns/${id}/resend`);
       toast.success('Campaign resending...');
-      load();
+      silentRefresh();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Failed to resend');
     }
@@ -157,7 +167,7 @@ export default function CampaignsPage() {
           <div className="page-sub">Bulk message sending</div>
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
-          <button className="btn btn-ghost" onClick={load}><RefreshCw size={14} /> Refresh</button>
+          <button className="btn btn-ghost" onClick={silentRefresh}><RefreshCw size={14} /> Refresh</button>
           <button className="btn btn-primary" onClick={() => setShowNew(true)}><Plus size={14} /> New Campaign</button>
         </div>
       </div>
