@@ -13,6 +13,142 @@ const { saveSessionToDB, restoreSessionFromDB } = require('./utils/sessionStore'
 require('dotenv').config({ override: true });
 if (originalPort) process.env.PORT = originalPort; // Restore environment PORT to prevent override
 
+// 🛡️ Puppeteer Stability Wrapper Interceptor
+const puppeteer = require('puppeteer');
+
+const wrapPage = (page) => {
+  if (!page || page._isWrapped) return;
+  page._isWrapped = true;
+
+  console.log('🛡️ [Puppeteer Wrapper] Wrapping page object for stability...');
+
+  // 1. Intercept page.goto to wait for network stability
+  const originalGoto = page.goto;
+  page.goto = async function(url, options) {
+    console.log(`🧭 [Puppeteer Wrapper] Page navigating to: ${url}`);
+    if (page.isClosed()) {
+      throw new Error('page.goto failed: Page is closed');
+    }
+    const response = await originalGoto.call(page, url, options);
+    
+    try {
+      if (!page.isClosed()) {
+        console.log('⏳ [Puppeteer Wrapper] Waiting for network idle (stability)...');
+        await page.waitForNetworkIdle({ timeout: 15000 }).catch(() => {
+          console.warn('⚠️ [Puppeteer Wrapper] networkidle timeout reached, proceeding anyway...');
+        });
+      }
+    } catch (e) {
+      console.warn('⚠️ [Puppeteer Wrapper] Error during networkidle wait:', e.message);
+    }
+    return response;
+  };
+
+  // 2. Intercept page.evaluate to retry on navigation/context-destroyed errors
+  const originalEvaluate = page.evaluate;
+  page.evaluate = async function(pageFunction, ...args) {
+    if (page.isClosed()) {
+      throw new Error('page.evaluate failed: Page is closed');
+    }
+
+    let retries = 3;
+    while (retries > 0) {
+      try {
+        return await originalEvaluate.call(page, pageFunction, ...args);
+      } catch (err) {
+        const msg = err.message || '';
+        const isNav = msg.includes('Execution context was destroyed') || msg.includes('navigation');
+        const isClosed = msg.includes('closed') || msg.includes('detached') || msg.includes('target');
+
+        if (isClosed) {
+          console.error(`❌ [Puppeteer Wrapper] Evaluation failed: Page is closed/detached.`);
+          throw err;
+        }
+
+        if (isNav && retries > 1) {
+          retries--;
+          console.warn(`⚠️ [Puppeteer Wrapper] Evaluation failed due to navigation. Retrying in 1.5s... (${retries} retries left). Error: ${msg}`);
+          await new Promise(r => setTimeout(r, 1500));
+          try {
+            if (!page.isClosed()) {
+              await page.waitForNetworkIdle({ timeout: 5000 }).catch(() => {});
+            }
+          } catch (e) {}
+          continue;
+        }
+        throw err;
+      }
+    }
+  };
+};
+
+const originalLaunch = puppeteer.launch;
+puppeteer.launch = async function(opts) {
+  console.log('🚀 [Puppeteer Interceptor] Intercepting puppeteer.launch. Headless:', opts.headless);
+  const browser = await originalLaunch.call(puppeteer, opts);
+  console.log('✅ [Puppeteer Interceptor] Browser launched successfully.');
+
+  try {
+    const pages = await browser.pages();
+    pages.forEach(wrapPage);
+  } catch (err) {
+    console.error('⚠️ [Puppeteer Interceptor] Error wrapping initial pages:', err.message);
+  }
+
+  browser.on('disconnected', () => {
+    console.error('🚨 [Puppeteer Interceptor] Browser crashed or disconnected from Puppeteer context.');
+  });
+
+  browser.on('targetcreated', async (target) => {
+    if (target.type() === 'page') {
+      try {
+        const page = await target.page();
+        if (page) {
+          wrapPage(page);
+        }
+      } catch (err) {
+        console.error('⚠️ [Puppeteer Interceptor] Error wrapping new page:', err.message);
+      }
+    }
+  });
+
+  return browser;
+};
+
+const originalConnect = puppeteer.connect;
+puppeteer.connect = async function(opts) {
+  console.log('🚀 [Puppeteer Interceptor] Intercepting puppeteer.connect...');
+  const browser = await originalConnect.call(puppeteer, opts);
+  console.log('✅ [Puppeteer Interceptor] Browser connected successfully.');
+
+  try {
+    const pages = await browser.pages();
+    pages.forEach(wrapPage);
+  } catch (err) {
+    console.error('⚠️ [Puppeteer Interceptor] Error wrapping initial pages on connect:', err.message);
+  }
+
+  browser.on('disconnected', () => {
+    console.error('🚨 [Puppeteer Interceptor] Browser crashed or disconnected from Puppeteer context on connect.');
+  });
+
+  browser.on('targetcreated', async (target) => {
+    if (target.type() === 'page') {
+      try {
+        const page = await target.page();
+        if (page) {
+          wrapPage(page);
+        }
+      } catch (err) {
+        console.error('⚠️ [Puppeteer Interceptor] Error wrapping new page on connect:', err.message);
+      }
+    }
+  });
+
+  return browser;
+};
+
+
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -142,7 +278,7 @@ function emitToUser(guid, event, data) {
 }
 global.emitToUser = emitToUser;
 
-async function initWhatsApp(userId, isSuper = false) {
+async function initWhatsApp(userId, isSuper = false, attempt = 1) {
   const guid = isSuper ? `sa_${userId}` : `user_${userId}`;
   if (pendingInits.has(guid)) {
     console.log(`⏳ [initWhatsApp] Skipping duplicate call: initialization already in progress for [${guid}]`);
@@ -166,13 +302,13 @@ async function initWhatsApp(userId, isSuper = false) {
       // Wait to ensure all file handles are closed
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
-    await _doInit(guid, userId, isSuper);
+    await _doInit(guid, userId, isSuper, attempt);
   } finally {
     pendingInits.delete(guid);
   }
 }
 
-async function _doInit(guid, userId, isSuper) {
+async function _doInit(guid, userId, isSuper, attempt = 1) {
   // 📥 Restore session from MongoDB if disk folder is missing
   await restoreSessionFromDB(guid);
 
@@ -185,19 +321,21 @@ async function _doInit(guid, userId, isSuper) {
       strict: false
     },
     puppeteer: {
-      headless: "new",
+      headless: true,
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-      protocolTimeout: 180000, // ⏱️ 3 min timeout to avoid ProtocolError crashes
+      protocolTimeout: 300000, // ⏱️ 5 min timeout
+      timeout: 300000,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
         '--no-first-run',
+        '--no-zygote',
+        '--single-process',
         '--disable-extensions',
         '--disable-background-networking',
         '--disable-default-apps',
-        '--no-zygote',
         '--disable-accelerated-2d-canvas',
         '--disable-renderer-backgrounding',
         '--disable-background-timer-throttling',
@@ -338,8 +476,9 @@ async function _doInit(guid, userId, isSuper) {
     const attempts = (authFailures.get(guid) || 0) + 1;
     authFailures.set(guid, attempts);
 
-    if (attempts < 3) {
-      console.warn(`🔐 [Auth] Temporary auth failure detected for [${guid}] (attempt ${attempts}/3). Retrying in 5s without session wipe...`);
+    if (attempts < 5) {
+      const delay = Math.pow(2, attempts) * 1000; // 2s, 4s, 8s, 16s, 32s
+      console.warn(`🔐 [Auth] Temporary auth failure detected for [${guid}] (attempt ${attempts}/5). Retrying in ${delay / 1000}s without session wipe...`);
       updateStatus(guid, 'connecting', { error: `Connection failed: ${msg}. Retrying...` });
       
       try {
@@ -348,13 +487,13 @@ async function _doInit(guid, userId, isSuper) {
       waClients.delete(guid);
 
       setTimeout(() => {
-        initWhatsApp(userId, isSuper);
-      }, 5000);
+        initWhatsApp(userId, isSuper, attempts + 1);
+      }, delay);
       return;
     }
 
-    // Persistent failure after 3 attempts -> Wipe session
-    console.error(`❌ [Failure] Persistent auth failure for [${guid}] after 3 attempts. Wiping session...`);
+    // Persistent failure after 5 attempts -> Wipe session
+    console.error(`❌ [Failure] Persistent auth failure for [${guid}] after 5 attempts. Wiping session...`);
     authFailures.delete(guid);
     updateStatus(guid, 'disconnected', { reason: 'auth_failure' });
 
@@ -436,15 +575,13 @@ async function _doInit(guid, userId, isSuper) {
     } catch (err) { console.error(`Message/AutoReply error [${guid}]:`, err.message); }
   });
 
-  // ── Safe initialize with auto-retry on ProtocolError ──────────
-  const tryInit = (attempt = 1) => {
-    console.log(`🔄 WhatsApp init attempt ${attempt} [${guid}]`);
+  // ── Safe initialize with auto-retry and exponential backoff ──────────
+  const tryInit = (attemptNum = 1) => {
+    console.log(`🔄 WhatsApp init attempt ${attemptNum}/5 [${guid}]`);
     updateStatus(guid, 'generating_qr');
     client.initialize().catch(async (err) => {
       const msg = err.message || '';
-      console.error(`❌ [Failure] Connection failed (initialize) for [${guid}] on attempt ${attempt}:`, msg);
-      const isTimeout = msg.includes('ProtocolError') || msg.includes('protocolTimeout') || msg.includes('timed out');
-      const isStuck = msg.includes('already running') || msg.includes('context was destroyed') || msg.includes('detached');
+      console.error(`❌ [Failure] Connection failed (initialize) for [${guid}] on attempt ${attemptNum}/5:`, msg);
 
       // Make sure we always destroy the failed browser instance to release file locks
       try {
@@ -456,32 +593,34 @@ async function _doInit(guid, userId, isSuper) {
       }
       waClients.delete(guid);
 
-      if ((isTimeout || isStuck) && attempt < 3) {
-        console.warn(`⚠️ WhatsApp init issue [${guid}] — retrying in 10s (attempt ${attempt}/3)... Error: ${msg.substring(0, 50)}`);
+      if (attemptNum < 5) {
+        const delay = Math.pow(2, attemptNum) * 1000; // 2s, 4s, 8s, 16s, 32s
+        console.warn(`⚠️ WhatsApp init issue [${guid}] — retrying in ${delay / 1000}s (attempt ${attemptNum}/5)... Error: ${msg.substring(0, 80)}`);
 
+        updateStatus(guid, 'connecting');
+        
+        setTimeout(() => {
+          _doInit(guid, userId, isSuper, attemptNum + 1);
+        }, delay);
+      } else {
+        // Persistent failures -> Wiping corrupt local session directory if it's stuck
+        const isStuck = msg.includes('context was destroyed') || msg.includes('detached') || msg.includes('already running');
         if (isStuck) {
           const sessionPath = path.join(__dirname, '.wwebjs_auth', `session-${guid}`);
           try {
             if (fs.existsSync(sessionPath)) {
               fs.rmSync(sessionPath, { recursive: true, force: true });
-              console.log(`🧹 Cleaned corrupt local session folder for [${guid}]`);
+              console.log(`🧹 Wiped corrupt local session folder for [${guid}] after 5 failed attempts`);
             }
           } catch (e) { console.error('Cleanup error:', e.message); }
         }
 
-        updateStatus(guid, 'connecting');
-        
-        // Spawn a completely fresh client instance for the retry
-        setTimeout(() => {
-          _doInit(guid, userId, isSuper);
-        }, 10000);
-      } else {
-        console.error(`❌ WhatsApp init failed [${guid}] after ${attempt} attempts:`, msg);
+        console.error(`❌ WhatsApp init failed [${guid}] after ${attemptNum} attempts:`, msg);
         updateStatus(guid, 'disconnected', { reason: 'init_failed' });
       }
     });
   };
-  tryInit();
+  tryInit(attempt);
 }
 
 // ── Socket.IO ────────────────────────────────────────────────

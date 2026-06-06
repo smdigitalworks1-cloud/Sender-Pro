@@ -94,7 +94,27 @@ async function restoreSessionFromDB(guid) {
       return false;
     }
 
-    console.log(`📥 [sessionStore] Found saved session for [${guid}] in MongoDB. Extracting to disk...`);
+    console.log(`📥 [sessionStore] Validating saved session for [${guid}] in MongoDB...`);
+    let isValid = false;
+    try {
+      const zip = new AdmZip(doc.sessionData);
+      const entries = zip.getEntries();
+      const hasLocalStorage = entries.some(entry => entry.entryName.includes('Local Storage'));
+      if (hasLocalStorage && entries.length > 0) {
+        isValid = true;
+      } else {
+        console.warn(`⚠️ [sessionStore] MongoDB session zip for [${guid}] contains no Local Storage entries.`);
+      }
+    } catch (zipErr) {
+      console.error(`❌ [sessionStore] Session zip data is corrupted for [${guid}]:`, zipErr.message);
+    }
+
+    if (!isValid) {
+      console.error(`❌ [sessionStore] Deeming MongoDB session invalid/corrupt for [${guid}]. Skipping restore.`);
+      return false;
+    }
+
+    console.log(`📥 [sessionStore] Session validated successfully. Extracting session files for [${guid}] to disk...`);
     fs.mkdirSync(sessionDir, { recursive: true });
     
     const zip = new AdmZip(doc.sessionData);

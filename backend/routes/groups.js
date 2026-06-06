@@ -4,8 +4,18 @@ const protect = require('../middleware/auth');
 const { Contact, GroupsCache, GroupParticipantsCache } = require('../models');
 const router = express.Router();
 
+// Helper to check if the WhatsApp client browser and page are fully ready and stable
+function isClientReady(client) {
+  return client && client.info && client.pupPage && !client.pupPage.isClosed();
+}
+
 // Helper to asynchronously fetch and cache groups from Puppeteer
 async function fetchAndCacheGroups(client, userId) {
+  if (!isClientReady(client)) {
+    console.warn(`⚠️ [GroupGrabber] Skipping background group fetch: WhatsApp client is not ready or browser page is closed for user ${userId}`);
+    return null;
+  }
+
   try {
     const storeGroups = await Promise.race([
       client.pupPage.evaluate(() => {
@@ -40,7 +50,7 @@ async function fetchAndCacheGroups(client, userId) {
       console.log(`[GroupGrabber] Successfully cached ${storeGroups.length} groups for user ${userId}`);
       
       // Emit real-time update to the user
-      const isSuper = client.info && client.info.wid && client.info.wid.user === 'superadmin'; // wait, get client guid
+      const isSuper = client.info && client.info.wid && client.info.wid.user === 'superadmin';
       const guid = isSuper ? `sa_${userId}` : `user_${userId}`;
       if (global.emitToUser) {
         global.emitToUser(guid, 'whatsapp:groups_updated', storeGroups);
@@ -57,10 +67,6 @@ async function fetchAndCacheGroups(client, userId) {
 // Get list of group chats
 router.get('/', protect, async (req, res) => {
   const client = req.app.get('getClientForUser')(req.user._id, req.user.role === 'superadmin');
-  if (!client || !client.info) {
-    return res.status(400).json({ message: 'WhatsApp is not completely connected. Scan QR first.' });
-  }
-
   const userId = req.user._id;
   const forceRefresh = req.query.refresh === 'true';
 
@@ -68,12 +74,20 @@ router.get('/', protect, async (req, res) => {
     // Check if we have cached groups
     const cachedData = await GroupsCache.findOne({ userId });
 
+    // If WhatsApp client is NOT completely connected or ready, fall back to cache immediately
+    if (!client || !client.info) {
+      if (cachedData) {
+        console.log(`ℹ️ [GroupGrabber] Client is not ready. Returning cached group list (fallback) for user ${userId}`);
+        return res.json(cachedData.groups);
+      }
+      return res.status(400).json({ message: 'WhatsApp is not completely connected. Scan QR first.' });
+    }
+
     // Stale-While-Revalidate: Return cache immediately if not a force refresh
     if (cachedData && !forceRefresh) {
       const isStale = (Date.now() - new Date(cachedData.lastUpdated).getTime()) > 120000; // 2 minutes
-      if (isStale) {
+      if (isStale && isClientReady(client)) {
         console.log(`[GroupGrabber] Cache stale for user ${userId}. Triggering background fetch...`);
-        // Trigger background fetch and return cache immediately
         fetchAndCacheGroups(client, userId).catch(err => {
           console.error('[GroupGrabber] Background update error:', err.message);
         });
@@ -82,6 +96,14 @@ router.get('/', protect, async (req, res) => {
     }
 
     // Force refresh or no cache available: Fetch synchronously with timeout
+    if (!isClientReady(client)) {
+      if (cachedData) {
+        console.warn(`⚠️ [GroupGrabber] Force refresh requested but client browser is not ready. Returning cached data.`);
+        return res.json(cachedData.groups);
+      }
+      return res.status(400).json({ message: 'WhatsApp client is busy initializing. Please try again in a few seconds.' });
+    }
+
     console.log(`[GroupGrabber] Fetching groups from browser for user ${userId} (forceRefresh=${forceRefresh})...`);
     const groups = await fetchAndCacheGroups(client, userId);
     
@@ -105,14 +127,21 @@ router.get('/', protect, async (req, res) => {
 // Get participants of a group
 router.get('/:groupId/participants', protect, async (req, res) => {
   const client = req.app.get('getClientForUser')(req.user._id, req.user.role === 'superadmin');
-  if (!client) return res.status(400).json({ message: 'WhatsApp not connected' });
-  
   const userId = req.user._id;
   const groupId = req.params.groupId;
 
   try {
     // Check participants cache
     const cachedParticipants = await GroupParticipantsCache.findOne({ userId, groupId });
+
+    if (!isClientReady(client)) {
+      if (cachedParticipants) {
+        console.log(`ℹ️ [GroupGrabber] Client not ready. Returning cached participants (fallback) for group ${groupId}`);
+        return res.json(cachedParticipants.participants);
+      }
+      return res.status(400).json({ message: 'WhatsApp client is not connected' });
+    }
+
     if (cachedParticipants) {
       const isStale = (Date.now() - new Date(cachedParticipants.lastUpdated).getTime()) > 300000; // 5 minutes
       if (!isStale) {
@@ -223,8 +252,6 @@ router.get('/:groupId/participants', protect, async (req, res) => {
 // Save group participants as contacts
 router.post('/:groupId/save', protect, async (req, res) => {
   const client = req.app.get('getClientForUser')(req.user._id, req.user.role === 'superadmin');
-  if (!client) return res.status(400).json({ message: 'WhatsApp not connected' });
-  
   const userId = req.user._id;
   const groupId = req.params.groupId;
 
@@ -246,6 +273,9 @@ router.post('/:groupId/save', protect, async (req, res) => {
       participants = cachedParticipants.participants.map(p => ({ id: { user: p.phone } }));
     } else {
       // Fetch fresh if not cached
+      if (!isClientReady(client)) {
+        return res.status(400).json({ message: 'WhatsApp client is not connected or ready. Please wait a few seconds and try again.' });
+      }
       console.log('[GroupGrabber] Participants not cached. Fetching from browser for saving...');
       const freshParts = await Promise.race([
         client.pupPage.evaluate(async (gId) => {
