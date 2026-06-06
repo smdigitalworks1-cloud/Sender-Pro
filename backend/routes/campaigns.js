@@ -81,18 +81,21 @@ router.post('/:id/start', protect, async (req, res) => {
           let contact = null;
           try {
             const chatId = `${phone}@c.us`;
-            console.log(`Sending message to: ${chatId}`);
+            console.log(`📤 [Campaign] Sending to: ${phone}`);
 
             contact = await Contact.findOne({ userId: campaign.userId, phone });
             let personalizedMsg = campaign.message;
 
+            // 1. Replace global variables first
             for (const gv of globalVars) {
               const regex = new RegExp(`\\{\\{${gv.key}\\}\\}`, 'gi');
               personalizedMsg = personalizedMsg.replace(regex, gv.value);
             }
 
+            // 2. Replace contact-specific variables
             if (contact) {
               personalizedMsg = personalizedMsg.replace(/\{\{name\}\}/gi, contact.name || 'Friend');
+              personalizedMsg = personalizedMsg.replace(/\{\{phone\}\}/gi, contact.phone || phone);
               if (contact.variables && typeof contact.variables === 'object') {
                 for (const [key, value] of Object.entries(contact.variables)) {
                   const regex = new RegExp(`\\{\\{${key}\\}\\}`, 'gi');
@@ -100,8 +103,13 @@ router.post('/:id/start', protect, async (req, res) => {
                 }
               }
             } else {
+              // No contact record found — use phone as fallback
               personalizedMsg = personalizedMsg.replace(/\{\{name\}\}/gi, 'Friend');
+              personalizedMsg = personalizedMsg.replace(/\{\{phone\}\}/gi, phone);
             }
+
+            // 3. Strip any remaining unreplaced {{variable}} placeholders
+            personalizedMsg = personalizedMsg.replace(/\{\{[^}]+\}\}/g, '');
 
             if (media) {
               await client.sendMessage(chatId, media, { caption: personalizedMsg });
@@ -109,9 +117,10 @@ router.post('/:id/start', protect, async (req, res) => {
               await client.sendMessage(chatId, personalizedMsg);
             }
             campaign.sent += 1;
+            console.log(`✅ [Campaign] Sent to ${phone}`);
             results.push({ phone, name: contact ? contact.name : 'Unknown', status: 'sent', time: new Date() });
           } catch (err) {
-            console.error('Send error:', err.message);
+            console.error(`❌ [Campaign] Send failed to ${phone}:`, err.message);
             campaign.failed += 1;
             results.push({ phone, name: contact ? contact.name : 'Unknown', status: 'failed', error: err.message, time: new Date() });
           }
@@ -216,14 +225,17 @@ router.post('/:id/resend', protect, async (req, res) => {
           let contact = null;
           try {
             const chatId = `${phone}@c.us`;
+            console.log(`📤 [Resend] Sending to: ${phone}`);
             contact = await Contact.findOne({ userId: campaign.userId, phone });
             let personalizedMsg = campaign.message;
 
+            // 1. Replace global variables first
             for (const gv of globalVars) {
               const regex = new RegExp(`\\{\\{${gv.key}\\}\\}`, 'gi');
               personalizedMsg = personalizedMsg.replace(regex, gv.value);
             }
 
+            // 2. Replace contact-specific variables
             if (contact) {
               personalizedMsg = personalizedMsg.replace(/\{\{name\}\}/gi, contact.name || 'Friend');
               personalizedMsg = personalizedMsg.replace(/\{\{phone\}\}/gi, contact.phone || phone);
@@ -239,15 +251,19 @@ router.post('/:id/resend', protect, async (req, res) => {
               personalizedMsg = personalizedMsg.replace(/\{\{phone\}\}/gi, phone);
             }
 
+            // 3. Strip any remaining unreplaced {{variable}} placeholders
+            personalizedMsg = personalizedMsg.replace(/\{\{[^}]+\}\}/g, '');
+
             if (media) {
               await client.sendMessage(chatId, media, { caption: personalizedMsg });
             } else {
               await client.sendMessage(chatId, personalizedMsg);
             }
             campaign.sent += 1;
+            console.log(`✅ [Resend] Sent to ${phone}`);
             results.push({ phone, name: contact ? contact.name : 'Unknown', status: 'sent', time: new Date() });
           } catch (err) {
-            console.error('Resend error:', err.message);
+            console.error(`❌ [Resend] Send failed to ${phone}:`, err.message);
             campaign.failed += 1;
             results.push({ phone, name: contact ? contact.name : 'Unknown', status: 'failed', error: err.message, time: new Date() });
           }
