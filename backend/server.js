@@ -8,6 +8,7 @@ const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
 const cron = require('node-cron');
 const path = require('path');
+const { saveSessionToDB, restoreSessionFromDB } = require('./utils/sessionStore');
 require('dotenv').config({ override: true });
 if (originalPort) process.env.PORT = originalPort; // Restore environment PORT to prevent override
 
@@ -76,6 +77,13 @@ connectDB().then(async () => {
 const waClients = new Map(); // globalUid → Client (globalUid is "user_#ID" or "sa_#ID")
 const waStatuses = new Map(); // globalUid → status string
 const pendingInits = new Set(); // Tracks active initialization sequences to prevent concurrent double-initializations
+const statusTimestamps = new Map(); // globalUid → timestamp of last status change
+
+function updateStatus(guid, status, data = {}) {
+  waStatuses.set(guid, status);
+  statusTimestamps.set(guid, Date.now());
+  emitToUser(guid, 'whatsapp:status', { status, ...data });
+}
 
 // Return a specific account's client
 function getClientForUser(userId, isSuper = false) {
@@ -133,16 +141,20 @@ async function initWhatsApp(userId, isSuper = false) {
       }
       waClients.delete(guid);
       waStatuses.delete(guid);
+      statusTimestamps.delete(guid);
       // Wait to ensure all file handles are closed
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
-    _doInit(guid, userId, isSuper);
+    await _doInit(guid, userId, isSuper);
   } finally {
     pendingInits.delete(guid);
   }
 }
 
-function _doInit(guid, userId, isSuper) {
+async function _doInit(guid, userId, isSuper) {
+  // 📥 Restore session from MongoDB if disk folder is missing
+  await restoreSessionFromDB(guid);
+
   const client = new Client({
     authStrategy: new LocalAuth({ clientId: guid }),
     webVersion: '2.3000.1039860984-alpha',
@@ -169,22 +181,24 @@ function _doInit(guid, userId, isSuper) {
         '--disable-renderer-backgrounding',
         '--disable-background-timer-throttling',
         '--disable-backgrounding-occluded-windows',
-        '--js-flags=--max-old-space-size=256',
+        `--js-flags=--max-old-space-size=${process.env.PUPPETEER_MAX_OLD_SPACE_SIZE || '512'}`,
+        '--disable-sync',
+        '--no-default-browser-check',
+        '--disable-software-rasterizer',
+        '--mute-audio',
+        '--disable-ipc-flooding-protection'
       ],
     },
   });
 
   waClients.set(guid, client);
-  waStatuses.set(guid, 'connecting');
-  emitToUser(guid, 'whatsapp:status', { status: 'connecting' });
+  updateStatus(guid, 'connecting');
 
   client.on('qr', async (qr) => {
     console.log(`📲 QR event received for [${guid}]`);
     try {
       const qrImg = await qrcode.toDataURL(qr);
-      waStatuses.set(guid, 'qr');
-      emitToUser(guid, 'whatsapp:qr', { qr: qrImg });
-      emitToUser(guid, 'whatsapp:status', { status: 'qr' });
+      updateStatus(guid, 'qr', { qr: qrImg });
     } catch (err) { console.error(`QR error [${guid}]:`, err.message); }
   });
 
@@ -204,13 +218,14 @@ function _doInit(guid, userId, isSuper) {
         console.error('Error updating whatsapp number:', err.message);
       }
 
-      waStatuses.set(guid, 'connected');
-      emitToUser(guid, 'whatsapp:status', {
-        status: 'connected',
+      updateStatus(guid, 'connected', {
         phone: connectedNumber,
         name: info.pushname,
       });
       console.log(`✅ WhatsApp ready [${guid}]:`, connectedNumber);
+
+      // 💾 Backup session files to database on ready
+      await saveSessionToDB(guid);
     } catch (err) { console.error(`Ready event error [${guid}]:`, err.message); }
   });
 
@@ -219,26 +234,29 @@ function _doInit(guid, userId, isSuper) {
     const sessionDir = path.join(__dirname, '.wwebjs_auth', `session-${guid}`);
     const shouldReconnect = status !== 'logging_out' && reason !== 'LOGOUT' && fs.existsSync(sessionDir);
 
-    waStatuses.set(guid, 'disconnected');
+    updateStatus(guid, 'disconnected', { reason });
     
     // If explicitly logging out or if disconnected due to phone logouts/expired credentials
     if (reason === 'LOGOUT' || status === 'logging_out') {
       try {
-        const { User, SuperAdmin } = require('./models');
+        const { User, SuperAdmin, WhatsAppSession } = require('./models');
         const account = isSuper ? await SuperAdmin.findById(userId) : await User.findById(userId);
         if (account) {
           account.whatsappNumber = null;
           await account.save();
           console.log(`✅ Database WhatsApp number cleared for [${guid}] on logout`);
         }
+        // Delete backup from DB
+        await WhatsAppSession.deleteOne({ guid });
+        console.log(`🧹 Deleted session backup from MongoDB for [${guid}] on logout`);
       } catch (err) {
-        console.error('Error clearing database whatsapp number:', err.message);
+        console.error('Error clearing database whatsapp number / backup on logout:', err.message);
       }
 
       try {
         if (fs.existsSync(sessionDir)) {
           fs.rmSync(sessionDir, { recursive: true, force: true });
-          console.log(`🧹 Deleted session folder for [${guid}] on logout`);
+          console.log(`🧹 Deleted local session folder for [${guid}] on logout`);
         }
       } catch (e) {
         console.error(`Failed to delete session folder for [${guid}]:`, e.message);
@@ -255,46 +273,48 @@ function _doInit(guid, userId, isSuper) {
     }
     
     waClients.delete(guid);
-    emitToUser(guid, 'whatsapp:status', { status: 'disconnected', reason });
     console.log(`❌ WhatsApp disconnected [${guid}]:`, reason);
 
     if (shouldReconnect) {
       console.log(`🔄 Auto-restarting WhatsApp for [${guid}] in 10s...`);
+      updateStatus(guid, 'reconnecting');
       setTimeout(() => initWhatsApp(userId, isSuper), 10000);
     }
   });
 
   client.on('auth_failure', async (msg) => {
     console.error(`🔐 Auth failure [${guid}]:`, msg);
-    waStatuses.set(guid, 'disconnected');
+    updateStatus(guid, 'disconnected', { reason: 'auth_failure' });
 
     try {
-      const { User, SuperAdmin } = require('./models');
+      const { User, SuperAdmin, WhatsAppSession } = require('./models');
       const account = isSuper ? await SuperAdmin.findById(userId) : await User.findById(userId);
       if (account) {
         account.whatsappNumber = null;
         await account.save();
         console.log(`✅ Database WhatsApp number cleared for [${guid}] due to auth failure`);
       }
+      // Delete backup from DB
+      await WhatsAppSession.deleteOne({ guid });
+      console.log(`🧹 Deleted corrupt session backup from MongoDB for [${guid}] due to auth failure`);
     } catch (err) {
-      console.error('Error clearing database whatsapp number:', err.message);
+      console.error('Error clearing database whatsapp number / backup on auth failure:', err.message);
     }
 
     const sessionDir = path.join(__dirname, '.wwebjs_auth', `session-${guid}`);
     try {
       if (fs.existsSync(sessionDir)) {
         fs.rmSync(sessionDir, { recursive: true, force: true });
-        console.log(`🧹 Deleted corrupt session folder for [${guid}] due to auth failure`);
+        console.log(`🧹 Deleted corrupt local session folder for [${guid}] due to auth failure`);
       }
     } catch (e) {
-      console.error(`Failed to delete corrupt session folder for [${guid}]:`, e.message);
+      console.error(`Failed to delete corrupt local session folder for [${guid}]:`, e.message);
     }
 
     try {
       await client.destroy();
     } catch (e) {}
     waClients.delete(guid);
-    emitToUser(guid, 'whatsapp:status', { status: 'disconnected', reason: 'auth_failure' });
   });
 
   client.on('message', async (msg) => {
@@ -361,19 +381,17 @@ function _doInit(guid, userId, isSuper) {
         console.warn(`⚠️ WhatsApp init issue [${guid}] — retrying in 10s (attempt ${attempt}/3)... Error: ${msg.substring(0, 50)}`);
 
         if (isStuck) {
-          // Now that the old browser is destroyed, delete the corrupt session folder cleanly without EPERM errors
           const fs = require('fs');
           const sessionPath = path.join(__dirname, '.wwebjs_auth', `session-${guid}`);
           try {
             if (fs.existsSync(sessionPath)) {
               fs.rmSync(sessionPath, { recursive: true, force: true });
-              console.log(`🧹 Cleaned corrupt session folder for [${guid}]`);
+              console.log(`🧹 Cleaned corrupt local session folder for [${guid}]`);
             }
           } catch (e) { console.error('Cleanup error:', e.message); }
         }
 
-        waStatuses.set(guid, 'connecting');
-        emitToUser(guid, 'whatsapp:status', { status: 'connecting' });
+        updateStatus(guid, 'connecting');
         
         // Spawn a completely fresh client instance for the retry
         setTimeout(() => {
@@ -381,8 +399,7 @@ function _doInit(guid, userId, isSuper) {
         }, 10000);
       } else {
         console.error(`❌ WhatsApp init failed [${guid}] after ${attempt} attempts:`, msg);
-        waStatuses.set(guid, 'disconnected');
-        emitToUser(guid, 'whatsapp:status', { status: 'disconnected', reason: 'init_failed' });
+        updateStatus(guid, 'disconnected', { reason: 'init_failed' });
       }
     });
   };
@@ -429,7 +446,7 @@ io.on('connection', (socket) => {
     console.log(`🔌 [disconnect] Explicit disconnect requested for [${guid}]`);
 
     // Mark as explicitly logging out so disconnected handler knows not to restart it
-    waStatuses.set(guid, 'logging_out');
+    updateStatus(guid, 'logging_out');
 
     const client = waClients.get(guid);
     if (client) {
@@ -438,32 +455,33 @@ io.on('connection', (socket) => {
       waClients.delete(guid);
     }
 
-    // Clear whatsappNumber in DB
+    // Clear whatsappNumber in DB and delete backup
     try {
-      const { User, SuperAdmin } = require('./models');
+      const { User, SuperAdmin, WhatsAppSession } = require('./models');
       const account = isSuper ? await SuperAdmin.findById(userId) : await User.findById(userId);
       if (account) {
         account.whatsappNumber = null;
         await account.save();
         console.log(`✅ Database WhatsApp number cleared for [${guid}] on explicit disconnect`);
       }
+      await WhatsAppSession.deleteOne({ guid });
+      console.log(`🧹 Deleted session backup from MongoDB for [${guid}] on explicit disconnect`);
     } catch (err) {
       console.error('Error clearing database whatsapp number:', err.message);
     }
 
-    // Delete session folder
+    // Delete local session folder
     const sessionDir = path.join(__dirname, '.wwebjs_auth', `session-${guid}`);
     try {
       if (fs.existsSync(sessionDir)) {
         fs.rmSync(sessionDir, { recursive: true, force: true });
-        console.log(`🧹 Deleted session folder for [${guid}] on explicit disconnect`);
+        console.log(`🧹 Deleted local session folder for [${guid}] on explicit disconnect`);
       }
     } catch (e) {
       console.error(`Failed to delete session folder for [${guid}]:`, e.message);
     }
 
-    waStatuses.set(guid, 'disconnected');
-    emitToUser(guid, 'whatsapp:status', { status: 'disconnected' });
+    updateStatus(guid, 'disconnected');
   });
 });
 
@@ -727,144 +745,199 @@ async function ensureWebCacheExists() {
 // ── Auto-Start Existing WhatsApp Sessions on Boot ─────────────
 async function bootstrap() {
   await ensureWebCacheExists();
-  const authDir = path.join(__dirname, '.wwebjs_auth');
-  const mongoose = require('mongoose');
-  if (fs.existsSync(authDir)) {
-    console.log('🔄 Scanning for existing WhatsApp sessions...');
-    const dirs = fs.readdirSync(authDir);
+
+  // Clear/reset any interrupted campaigns on startup
+  try {
+    const { Campaign } = require('./models');
+    const resetCampaigns = await Campaign.updateMany(
+      { status: 'running' },
+      { status: 'draft' }
+    );
+    if (resetCampaigns.modifiedCount > 0) {
+      console.log(`🧹 Reset ${resetCampaigns.modifiedCount} interrupted campaigns from 'running' to 'draft' status.`);
+    }
+  } catch (err) {
+    console.error('Failed to reset interrupted campaigns:', err.message);
+  }
+
+  // Scan MongoDB for saved sessions and restore/initialize them
+  try {
+    const { WhatsAppSession, User, SuperAdmin } = require('./models');
+    const mongoose = require('mongoose');
+    const sessions = await WhatsAppSession.find();
+    console.log(`🔄 Scanning database: found ${sessions.length} saved sessions...`);
+    
     const startedUsers = new Set();
     let index = 0;
-    
-    for (const dir of dirs) {
-      if (dir.startsWith('session-')) {
-        const guid = dir.replace('session-', '');
-        const isSuper = guid.startsWith('sa_');
-        const userId = guid.replace('sa_', '').replace('user_', '');
 
-        if (startedUsers.has(userId)) {
-          console.log(`⚠️ Skipping duplicate WhatsApp session boot for user: ${userId} (guid: ${guid})`);
+    for (const session of sessions) {
+      const guid = session.guid;
+      const isSuper = guid.startsWith('sa_');
+      const userId = guid.replace('sa_', '').replace('user_', '');
+
+      if (startedUsers.has(userId)) {
+        continue;
+      }
+
+      try {
+        let accountExists = false;
+        let isSubscriptionActive = true;
+
+        if (mongoose.Types.ObjectId.isValid(userId)) {
+          if (isSuper) {
+            const admin = await SuperAdmin.findById(userId);
+            if (admin) {
+              accountExists = true;
+            } else {
+              const user = await User.findById(userId);
+              if (user && (user.role === 'superadmin' || user.isAdmin)) {
+                accountExists = true;
+              }
+            }
+          } else {
+            const user = await User.findById(userId);
+            if (user) {
+              accountExists = true;
+              isSubscriptionActive = user.hasActiveSubscription();
+            }
+          }
+        }
+
+        if (!accountExists) {
+          console.log(`🧹 [bootstrap] Deleting corrupt/non-existent account session [${guid}] from DB`);
+          await WhatsAppSession.deleteOne({ guid });
           continue;
         }
 
-        try {
-          const { User, SuperAdmin } = require('./models');
-          let accountExists = false;
-          let isSubscriptionActive = true;
-
-          if (mongoose.Types.ObjectId.isValid(userId)) {
-            if (isSuper) {
-              const admin = await SuperAdmin.findById(userId);
-              if (admin) {
-                accountExists = true;
-              } else {
-                const user = await User.findById(userId);
-                if (user && (user.role === 'superadmin' || user.isAdmin)) {
-                  accountExists = true;
-                }
-              }
-            } else {
-              const user = await User.findById(userId);
-              if (user) {
-                accountExists = true;
-                isSubscriptionActive = user.hasActiveSubscription();
-              }
-            }
-          }
-
-          if (!accountExists) {
-            console.log(`🧹 [bootstrap] Deleting session folder for non-existent account: ${guid}`);
-            try {
-              fs.rmSync(path.join(authDir, dir), { recursive: true, force: true });
-            } catch (e) {
-              console.error(`Failed to delete non-existent account folder ${dir}:`, e.message);
-            }
-            continue;
-          }
-
-          if (!isSubscriptionActive) {
-            console.log(`⚠️ [bootstrap] Skipping expired subscription user: ${userId} (guid: ${guid})`);
-            continue;
-          }
-
-          startedUsers.add(userId);
-          const currentIndex = index++;
-          // Delay each boot by 4 seconds to prevent CPU overload
-          setTimeout(() => {
-            console.log(`🚀 Auto-resuming WhatsApp session: ${guid}`);
-            initWhatsApp(userId, isSuper);
-          }, currentIndex * 4000);
-
-        } catch (dbErr) {
-          console.error(`Error validating user ${userId} on boot:`, dbErr.message);
+        if (!isSubscriptionActive) {
+          console.log(`⚠️ [bootstrap] Skipping expired subscription user: ${userId} (guid: ${guid})`);
+          continue;
         }
+
+        startedUsers.add(userId);
+        const currentIndex = index++;
+        
+        // Delay boot of each session to prevent CPU spike
+        setTimeout(async () => {
+          console.log(`🚀 [bootstrap] Restoring and resuming WhatsApp session: ${guid}`);
+          initWhatsApp(userId, isSuper);
+        }, currentIndex * 4000);
+
+      } catch (err) {
+        console.error(`Error validating user ${userId} on boot:`, err.message);
       }
     }
+  } catch (err) {
+    console.error('Failed to bootstrap sessions from DB:', err.message);
   }
 
   // 🛡️ 24/7 Keep-Alive Interval Daemon: Runs every 30 seconds
   setInterval(async () => {
-    if (fs.existsSync(authDir)) {
-      const dirs = fs.readdirSync(authDir);
-      for (const dir of dirs) {
-        if (dir.startsWith('session-')) {
-          const guid = dir.replace('session-', '');
-          const isSuper = guid.startsWith('sa_');
-          const userId = guid.replace('sa_', '').replace('user_', '');
+    try {
+      const { WhatsAppSession, User, SuperAdmin } = require('./models');
+      const mongoose = require('mongoose');
+      const sessions = await WhatsAppSession.find();
 
-          const client = waClients.get(guid);
-          const status = waStatuses.get(guid);
+      for (const session of sessions) {
+        const guid = session.guid;
+        const isSuper = guid.startsWith('sa_');
+        const userId = guid.replace('sa_', '').replace('user_', '');
 
-          // If no active client exists in waClients AND we are not currently trying to connect, scan QR, or logging out.
-          if (!client && status !== 'connecting' && status !== 'qr' && status !== 'logging_out') {
-            try {
-              const { User, SuperAdmin } = require('./models');
-              let accountExists = false;
-              let isSubscriptionActive = true;
+        const client = waClients.get(guid);
+        const status = waStatuses.get(guid);
+        const timestamp = statusTimestamps.get(guid) || Date.now();
+        const timeDiff = Date.now() - timestamp;
 
-              if (mongoose.Types.ObjectId.isValid(userId)) {
-                if (isSuper) {
-                  const admin = await SuperAdmin.findById(userId);
-                  if (admin) {
-                    accountExists = true;
-                  } else {
-                    const user = await User.findById(userId);
-                    if (user && (user.role === 'superadmin' || user.isAdmin)) {
-                      accountExists = true;
-                    }
-                  }
+        // Stuck Connection Recovery: If state is 'connecting' or 'qr' for more than 3 minutes, force restart
+        if (client && (status === 'connecting' || status === 'qr') && timeDiff > 180000) {
+          console.warn(`🚨 [Keep-Alive] Client for [${guid}] is stuck in [${status}] for ${(timeDiff / 1000).toFixed(0)}s. Force-restarting...`);
+          try {
+            await client.destroy();
+          } catch (e) {}
+          waClients.delete(guid);
+          updateStatus(guid, 'disconnected', { reason: 'stuck_timeout' });
+        }
+
+        // Active client exists, but status is 'disconnected' (unexpected crash)
+        const activeClient = waClients.get(guid);
+        const currentStatus = waStatuses.get(guid);
+        if (activeClient && currentStatus === 'disconnected') {
+          console.log(`🛡️ [Keep-Alive] Client exists for [${guid}] but status is disconnected. Clean resetting...`);
+          try { await activeClient.destroy(); } catch (e) {}
+          waClients.delete(guid);
+        }
+
+        // Re-fetch client/status
+        const finalClient = waClients.get(guid);
+        const finalStatus = waStatuses.get(guid);
+
+        // If no active client exists in waClients AND we are not currently connecting or logging out
+        if (!finalClient && finalStatus !== 'connecting' && finalStatus !== 'qr' && finalStatus !== 'reconnecting' && finalStatus !== 'logging_out') {
+          try {
+            let accountExists = false;
+            let isSubscriptionActive = true;
+
+            if (mongoose.Types.ObjectId.isValid(userId)) {
+              if (isSuper) {
+                const admin = await SuperAdmin.findById(userId);
+                if (admin) {
+                  accountExists = true;
                 } else {
                   const user = await User.findById(userId);
-                  if (user) {
+                  if (user && (user.role === 'superadmin' || user.isAdmin)) {
                     accountExists = true;
-                    isSubscriptionActive = user.hasActiveSubscription();
                   }
                 }
-              }
-
-              if (!accountExists) {
-                console.log(`🧹 [Keep-Alive] Deleting session folder for non-existent account: ${guid}`);
-                try {
-                  fs.rmSync(path.join(authDir, dir), { recursive: true, force: true });
-                } catch (e) {
-                  console.error(`Failed to delete non-existent account folder ${dir}:`, e.message);
+              } else {
+                const user = await User.findById(userId);
+                if (user) {
+                  accountExists = true;
+                  isSubscriptionActive = user.hasActiveSubscription();
                 }
-                continue;
               }
-
-              if (!isSubscriptionActive) {
-                continue; // Do not restore expired subscriptions
-              }
-
-              console.log(`🛡️ [Keep-Alive] Session folder exists for [${guid}] but client is missing or inactive. Status: ${status || 'none'}. Restoring...`);
-              initWhatsApp(userId, isSuper);
-            } catch (dbErr) {
-              console.error(`Error validating user ${userId} in keep-alive:`, dbErr.message);
             }
+
+            if (!accountExists) {
+              console.log(`🧹 [Keep-Alive] Deleting session for non-existent account: ${guid}`);
+              await WhatsAppSession.deleteOne({ guid });
+              const sessionDir = path.join(__dirname, '.wwebjs_auth', `session-${guid}`);
+              if (fs.existsSync(sessionDir)) {
+                fs.rmSync(sessionDir, { recursive: true, force: true });
+              }
+              continue;
+            }
+
+            if (!isSubscriptionActive) {
+              continue; // Do not restore expired subscriptions
+            }
+
+            console.log(`🛡️ [Keep-Alive] Session active in DB for [${guid}] but client is missing or inactive. Status: ${finalStatus || 'none'}. Restoring...`);
+            initWhatsApp(userId, isSuper);
+          } catch (dbErr) {
+            console.error(`Error validating user ${userId} in keep-alive:`, dbErr.message);
           }
         }
       }
+    } catch (e) {
+      console.error('[Keep-Alive Daemon Error]:', e.message);
     }
   }, 30000);
+
+  // ⏰ Periodic Session Backup Daemon: Runs every 30 minutes to back up active Chrome sessions to MongoDB
+  setInterval(async () => {
+    console.log('⏰ Running periodic WhatsApp session backup to database...');
+    for (const [guid, client] of waClients) {
+      const status = waStatuses.get(guid);
+      if (status === 'connected' && client && client.info) {
+        try {
+          console.log(`💾 Periodic backup of session [${guid}] to MongoDB...`);
+          await saveSessionToDB(guid);
+        } catch (err) {
+          console.error(`Failed to periodically back up session [${guid}]:`, err.message);
+        }
+      }
+    }
+  }, 30 * 60 * 1000);
 }
 
 const { exec } = require('child_process');

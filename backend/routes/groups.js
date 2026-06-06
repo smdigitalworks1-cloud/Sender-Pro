@@ -1,58 +1,103 @@
 // routes/groups.js
 const express = require('express');
 const protect = require('../middleware/auth');
-const { Contact } = require('../models');
+const { Contact, GroupsCache, GroupParticipantsCache } = require('../models');
 const router = express.Router();
+
+// Helper to asynchronously fetch and cache groups from Puppeteer
+async function fetchAndCacheGroups(client, userId) {
+  try {
+    const storeGroups = await Promise.race([
+      client.pupPage.evaluate(() => {
+        if (!window.Store || !window.Store.Chat) return null;
+        
+        const chats = window.Store.Chat.getModelsArray().filter(chat => 
+          chat.isGroup || (chat.id && chat.id._serialized && chat.id._serialized.includes('@g.us'))
+        );
+        
+        return chats.map(chat => {
+          let metadata = chat.groupMetadata;
+          if (!metadata && window.Store.GroupMetadata) {
+            metadata = window.Store.GroupMetadata.get(chat.id._serialized || chat.id);
+          }
+          return {
+            id: chat.id._serialized || chat.id,
+            name: chat.name || chat.formattedTitle || chat.title || "Unknown Group",
+            participantCount: metadata?.participants?.length || chat.participants?.length || 0,
+            description: metadata?.desc || chat.description || "",
+          };
+        });
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Browser evaluation timed out')), 15000))
+    ]);
+
+    if (storeGroups && storeGroups.length > 0) {
+      await GroupsCache.findOneAndUpdate(
+        { userId },
+        { groups: storeGroups, lastUpdated: new Date() },
+        { upsert: true, new: true }
+      );
+      console.log(`[GroupGrabber] Successfully cached ${storeGroups.length} groups for user ${userId}`);
+      
+      // Emit real-time update to the user
+      const isSuper = client.info && client.info.wid && client.info.wid.user === 'superadmin'; // wait, get client guid
+      const guid = isSuper ? `sa_${userId}` : `user_${userId}`;
+      if (global.emitToUser) {
+        global.emitToUser(guid, 'whatsapp:groups_updated', storeGroups);
+      }
+      return storeGroups;
+    }
+    return null;
+  } catch (err) {
+    console.error(`[GroupGrabber] Async group fetch failed for user ${userId}:`, err.message);
+    return null;
+  }
+}
 
 // Get list of group chats
 router.get('/', protect, async (req, res) => {
   const client = req.app.get('getClientForUser')(req.user._id, req.user.role === 'superadmin');
-  if (!client || !client.info) return res.status(400).json({ message: 'WhatsApp is not completely connected. Scan QR first.' });
+  if (!client || !client.info) {
+    return res.status(400).json({ message: 'WhatsApp is not completely connected. Scan QR first.' });
+  }
+
+  const userId = req.user._id;
+  const forceRefresh = req.query.refresh === 'true';
+
   try {
-    let groups = [];
-    let success = false;
+    // Check if we have cached groups
+    const cachedData = await GroupsCache.findOne({ userId });
 
-    // 1. Primary Fast: Direct browser Store evaluation
-    try {
-      const storeGroups = await client.pupPage.evaluate(() => {
-        if (!window.Store || !window.Store.Chat) return null;
-        return window.Store.Chat.getModelsArray()
-          .filter(chat => chat.isGroup || (chat.id && chat.id._serialized && chat.id._serialized.includes('@g.us')))
-          .map(chat => ({
-            id: chat.id._serialized || chat.id,
-            name: chat.name || chat.formattedTitle || chat.title || "Unknown Group",
-            participantCount: chat.groupMetadata?.participants?.length || chat.participants?.length || 0,
-            description: chat.groupMetadata?.desc || chat.description || "",
-          }));
-      });
-
-      if (storeGroups && storeGroups.length > 0) {
-        groups = storeGroups;
-        success = true;
-        console.log(`[GroupGrabber] Direct Store method found ${groups.length} groups.`);
+    // Stale-While-Revalidate: Return cache immediately if not a force refresh
+    if (cachedData && !forceRefresh) {
+      const isStale = (Date.now() - new Date(cachedData.lastUpdated).getTime()) > 120000; // 2 minutes
+      if (isStale) {
+        console.log(`[GroupGrabber] Cache stale for user ${userId}. Triggering background fetch...`);
+        // Trigger background fetch and return cache immediately
+        fetchAndCacheGroups(client, userId).catch(err => {
+          console.error('[GroupGrabber] Background update error:', err.message);
+        });
       }
-    } catch (err) {
-      console.log('[GroupGrabber] Direct Store method failed or timed out:', err.message);
+      return res.json(cachedData.groups);
     }
 
-    // 2. Fallback: Standard getChats() API (avoiding slow groupMetadata getter)
-    if (!success) {
-      console.log('[GroupGrabber] Falling back to getChats() API...');
-      const chats = await client.getChats();
-      groups = chats
-        .filter(c => c.isGroup || (c.id && c.id._serialized && c.id._serialized.includes('@g.us')))
-        .map(g => ({
-          id: g.id?._serialized || g.id,
-          name: g.name || g.formattedTitle || g.title || 'Unknown Group',
-          participantCount: g.participants?.length || 0,
-          description: g.description || '',
-        }));
-      console.log(`[GroupGrabber] getChats() fallback found ${groups.length} groups.`);
+    // Force refresh or no cache available: Fetch synchronously with timeout
+    console.log(`[GroupGrabber] Fetching groups from browser for user ${userId} (forceRefresh=${forceRefresh})...`);
+    const groups = await fetchAndCacheGroups(client, userId);
+    
+    if (groups) {
+      return res.json(groups);
     }
 
-    console.log(`[GroupGrabber] Total groups found: ${groups.length}`);
-    res.json(groups);
+    // If fetch failed but we have old cached data, fall back to cache
+    if (cachedData) {
+      console.warn(`[GroupGrabber] Browser fetch failed/timed out. Falling back to old cache for user ${userId}`);
+      return res.json(cachedData.groups);
+    }
+
+    return res.status(504).json({ message: 'WhatsApp is busy syncing. Please try again in a few seconds.' });
   } catch (e) {
+    console.error('[GroupGrabber] Route / groups error:', e.message);
     res.status(500).json({ message: e.message });
   }
 });
@@ -61,56 +106,81 @@ router.get('/', protect, async (req, res) => {
 router.get('/:groupId/participants', protect, async (req, res) => {
   const client = req.app.get('getClientForUser')(req.user._id, req.user.role === 'superadmin');
   if (!client) return res.status(400).json({ message: 'WhatsApp not connected' });
+  
+  const userId = req.user._id;
+  const groupId = req.params.groupId;
+
   try {
-    let formatted = null;
-
-    // 1. Primary Fast: Direct browser Store evaluation with metadata auto-fetch
-    try {
-      formatted = await client.pupPage.evaluate(async (groupId) => {
-        if (!window.Store || !window.Store.Chat) return null;
-        const chat = window.Store.Chat.get(groupId);
-        if (!chat) return null;
-        
-        let metadata = chat.groupMetadata;
-        // If metadata is not loaded, force load it from WhatsApp Web store
-        if (!metadata && window.Store.GroupMetadata) {
-          try {
-            metadata = await window.Store.GroupMetadata.find(groupId);
-          } catch (e) {
-            console.error('Failed to fetch missing group metadata in browser:', e.message || e);
-          }
-        }
-
-        if (!metadata) return null;
-        
-        const participants = metadata.participants.models || metadata.participants || [];
-        return participants.map(p => {
-          const id = p.id?._serialized || p.id || '';
-          const phone = id.split('@')[0] || '';
-          return {
-            phone: phone || 'Unknown',
-            isAdmin: p.isAdmin || false,
-            isSuperAdmin: p.isSuperAdmin || false,
-          };
-        });
-      }, req.params.groupId);
-    } catch (err) {
-      console.log('[GroupGrabber] Fast participant fetch failed:', err.message);
+    // Check participants cache
+    const cachedParticipants = await GroupParticipantsCache.findOne({ userId, groupId });
+    if (cachedParticipants) {
+      const isStale = (Date.now() - new Date(cachedParticipants.lastUpdated).getTime()) > 300000; // 5 minutes
+      if (!isStale) {
+        return res.json(cachedParticipants.participants);
+      }
     }
 
-    // 2. Fallback: Standard chat fetch
+    let formatted = null;
+
+    // 1. Fast Browser Evaluation with LID Phone Resolution & Timeout
+    try {
+      formatted = await Promise.race([
+        client.pupPage.evaluate(async (gId) => {
+          if (!window.Store || !window.Store.Chat) return null;
+          const chat = window.Store.Chat.get(gId);
+          if (!chat) return null;
+          
+          let metadata = chat.groupMetadata;
+          if (!metadata && window.Store.GroupMetadata) {
+            try {
+              metadata = await window.Store.GroupMetadata.find(gId);
+            } catch (e) {
+              console.error('Failed to find group metadata in browser evaluation:', e.message || e);
+            }
+          }
+
+          if (!metadata) return null;
+          
+          const getPhone = (id) => {
+            if (!id) return '';
+            if (id.server === 'lid' && window.Store.LidUtils?.getPhoneNumber) {
+              const pnWid = window.Store.LidUtils.getPhoneNumber(id);
+              return pnWid ? pnWid.user : id.user;
+            }
+            return id.user || id._serialized?.split('@')[0] || '';
+          };
+
+          const participants = metadata.participants.models || metadata.participants || [];
+          return participants.map(p => {
+            const phone = getPhone(p.id);
+            return {
+              phone: phone || 'Unknown',
+              isAdmin: p.isAdmin || false,
+              isSuperAdmin: p.isSuperAdmin || false,
+            };
+          });
+        }, groupId),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Browser evaluation timed out')), 15000))
+      ]);
+    } catch (err) {
+      console.log('[GroupGrabber] Fast participant fetch failed or timed out:', err.message);
+    }
+
+    // 2. Fallback: Standard chat fetch if browser evaluation failed
     if (!formatted) {
       console.log('[GroupGrabber] Falling back to getChatById() for participants...');
-      const chat = await client.getChatById(req.params.groupId);
+      const chat = await client.getChatById(groupId);
       if (!chat || !chat.isGroup) {
+        if (cachedParticipants) {
+          console.warn('[GroupGrabber] Group not found or slow fallback. Returning cached participants.');
+          return res.json(cachedParticipants.participants);
+        }
         return res.status(404).json({ message: 'Group not found' });
       }
 
-      // Force load groupMetadata if missing in the returned chat object
       let participants = chat.participants || [];
       if (participants.length === 0 && chat.id) {
         try {
-          // Trigger lazy getter or fetch metadata
           const meta = await chat.groupMetadata;
           if (meta && meta.participants) {
             participants = meta.participants;
@@ -133,10 +203,19 @@ router.get('/:groupId/participants', protect, async (req, res) => {
       });
     }
 
-    console.log(`[GroupGrabber] Fetched ${formatted.length} participants for ${req.params.groupId}`);
+    // Cache the resolved participants list
+    if (formatted && formatted.length > 0) {
+      await GroupParticipantsCache.findOneAndUpdate(
+        { userId, groupId },
+        { participants: formatted, lastUpdated: new Date() },
+        { upsert: true, new: true }
+      );
+      console.log(`[GroupGrabber] Cached ${formatted.length} participants for group ${groupId}`);
+    }
+
     res.json(formatted);
   } catch (e) {
-    console.log('[GroupGrabber] Participant fetch failed:', e.message);
+    console.error('[GroupGrabber] Participant fetch failed:', e.message);
     res.status(500).json({ message: e.message });
   }
 });
@@ -145,64 +224,67 @@ router.get('/:groupId/participants', protect, async (req, res) => {
 router.post('/:groupId/save', protect, async (req, res) => {
   const client = req.app.get('getClientForUser')(req.user._id, req.user.role === 'superadmin');
   if (!client) return res.status(400).json({ message: 'WhatsApp not connected' });
+  
+  const userId = req.user._id;
+  const groupId = req.params.groupId;
+
   try {
     let participants = [];
     let groupName = 'Unknown Group';
 
-    // 1. Primary Fast: Direct browser Store evaluation with metadata auto-fetch
-    try {
-      const data = await client.pupPage.evaluate(async (groupId) => {
-        if (!window.Store || !window.Store.Chat) return null;
-        const chat = window.Store.Chat.get(groupId);
-        if (!chat) return null;
-        
-        let metadata = chat.groupMetadata;
-        if (!metadata && window.Store.GroupMetadata) {
-          try {
-            metadata = await window.Store.GroupMetadata.find(groupId);
-          } catch (e) {
-            console.error('Failed to fetch missing group metadata for save:', e.message || e);
-          }
-        }
-
-        const name = chat.name || chat.formattedTitle || 'Unknown Group';
-        const parts = metadata ? (metadata.participants?.models || metadata.participants || []).map(p => {
-          const id = p.id?._serialized || p.id || '';
-          return id.split('@')[0] || '';
-        }) : [];
-        
-        return { name, parts };
-      }, req.params.groupId);
-
-      if (data && data.parts.length > 0) {
-        groupName = data.name;
-        participants = data.parts.map(phone => ({ id: { user: phone } }));
-      }
-    } catch (err) {
-      console.log('[GroupGrabber] Fast save participant fetch failed:', err.message);
+    // Try to get group name from cache
+    const groupsCache = await GroupsCache.findOne({ userId });
+    if (groupsCache) {
+      const g = groupsCache.groups.find(item => item.id === groupId);
+      if (g) groupName = g.name;
     }
 
-    // 2. Fallback: Standard chat fetch
-    if (participants.length === 0) {
-      console.log('[GroupGrabber] Falling back to getChatById() for save...');
-      const chat = await client.getChatById(req.params.groupId);
-      if (!chat || !chat.isGroup) {
-        return res.status(404).json({ message: 'Group not found' });
-      }
-      groupName = chat.name || 'Unknown Group';
-      
-      let chatParticipants = chat.participants || [];
-      if (chatParticipants.length === 0) {
-        try {
-          const meta = await chat.groupMetadata;
-          if (meta && meta.participants) {
-            chatParticipants = meta.participants;
+    // Check participants cache first
+    const cachedParticipants = await GroupParticipantsCache.findOne({ userId, groupId });
+    if (cachedParticipants && cachedParticipants.participants.length > 0) {
+      console.log(`[GroupGrabber] Using cached participants to save ${cachedParticipants.participants.length} contacts...`);
+      participants = cachedParticipants.participants.map(p => ({ id: { user: p.phone } }));
+    } else {
+      // Fetch fresh if not cached
+      console.log('[GroupGrabber] Participants not cached. Fetching from browser for saving...');
+      const freshParts = await Promise.race([
+        client.pupPage.evaluate(async (gId) => {
+          if (!window.Store || !window.Store.Chat) return null;
+          const chat = window.Store.Chat.get(gId);
+          if (!chat) return null;
+          
+          let metadata = chat.groupMetadata;
+          if (!metadata && window.Store.GroupMetadata) {
+            try {
+              metadata = await window.Store.GroupMetadata.find(gId);
+            } catch (e) {
+              console.error('Failed to find group metadata for save in browser:', e.message || e);
+            }
           }
-        } catch (err) {
-          console.error('[GroupGrabber] Fallback save metadata load failed:', err.message);
-        }
+
+          const getPhone = (id) => {
+            if (!id) return '';
+            if (id.server === 'lid' && window.Store.LidUtils?.getPhoneNumber) {
+              const pnWid = window.Store.LidUtils.getPhoneNumber(id);
+              return pnWid ? pnWid.user : id.user;
+            }
+            return id.user || id._serialized?.split('@')[0] || '';
+          };
+
+          const name = chat.name || chat.formattedTitle || 'Unknown Group';
+          const parts = metadata ? (metadata.participants?.models || metadata.participants || []).map(p => {
+            return getPhone(p.id);
+          }) : [];
+          
+          return { name, parts };
+        }, groupId),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Browser evaluation timed out')), 15000))
+      ]);
+
+      if (freshParts && freshParts.parts.length > 0) {
+        groupName = freshParts.name;
+        participants = freshParts.parts.map(phone => ({ id: { user: phone } }));
       }
-      participants = chatParticipants;
     }
 
     const docs = participants.map(p => {
@@ -211,7 +293,7 @@ router.post('/:groupId/save', protect, async (req, res) => {
         phone = p.id.user || (typeof p.id === 'string' ? p.id.split('@')[0] : p.id._serialized?.split('@')[0]);
       }
       return {
-        userId: req.user._id,
+        userId: userId,
         phone: phone,
         group: groupName,
         source: 'group_grab',
@@ -226,6 +308,7 @@ router.post('/:groupId/save', protect, async (req, res) => {
                 upsert: true
             }
         })));
+        console.log(`[GroupGrabber] Bulk saved ${docs.length} contacts for user ${userId}`);
     }
 
     res.json({ saved: docs.length });

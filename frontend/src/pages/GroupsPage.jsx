@@ -1,29 +1,57 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import api from '../utils/api';
 import toast from 'react-hot-toast';
 import { Users2, RefreshCw, Download, ChevronDown, ChevronRight, ShieldCheck, Search } from 'lucide-react';
+import { io } from 'socket.io-client';
+import { useAuth } from '../context/AuthContext';
+
+const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || (process.env.NODE_ENV === 'development' ? 'http://localhost:5000' : window.location.origin);
 
 export default function GroupsPage() {
+  const { user } = useAuth();
   const [groups, setGroups] = useState([]);
   const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState(null);
   const [parts, setParts] = useState({});
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState({});
+  const socketRef = useRef(null);
 
   useEffect(() => {
-    loadGroups();
-  }, []);
+    loadGroups(false);
 
-  const loadGroups = async () => {
+    if (user?.id) {
+      const socket = io(SOCKET_URL);
+      socketRef.current = socket;
+
+      socket.on('connect', () => {
+        socket.emit('whatsapp:identify', { userId: user.id, role: user.role });
+      });
+
+      socket.on('whatsapp:groups_updated', (updatedGroups) => {
+        setGroups(updatedGroups);
+        console.log('🔄 Real-time groups cache update received via socket.');
+      });
+
+      return () => {
+        socket.disconnect();
+      };
+    }
+  }, [user?.id, user?.role]);
+
+  const loadGroups = async (forceRefresh = false) => {
     setLoading(true);
     try {
-      const { data } = await api.get('/groups');
+      const { data } = await api.get(forceRefresh ? '/groups?refresh=true' : '/groups');
       setGroups(data);
-      toast.success(`Found ${data.length} groups`);
+      if (forceRefresh) {
+        toast.success(`Refreshed ${data.length} groups`);
+      }
     } catch (err) {
       toast.error(err.response?.data?.message || 'WhatsApp not connected');
-    } finally { setLoading(false); }
+    } finally {
+      setLoading(false);
+    }
   };
 
   const loadParticipants = async (groupId) => {
@@ -75,7 +103,7 @@ export default function GroupsPage() {
           <div className="page-title">Group Grabber</div>
           <div className="page-sub">Extract contacts from your WhatsApp groups</div>
         </div>
-        <button className="btn btn-primary" onClick={loadGroups} disabled={loading}>
+        <button className="btn btn-primary" onClick={() => loadGroups(true)} disabled={loading}>
           <RefreshCw size={14} className={loading ? 'spin' : ''} />
           {loading ? 'Loading...' : 'Fetch Groups'}
         </button>

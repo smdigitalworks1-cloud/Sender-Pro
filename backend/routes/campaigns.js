@@ -66,6 +66,17 @@ router.post('/:id/start', protect, async (req, res) => {
 
         const results = [];
 
+        // Pre-download media once outside the loop to optimize speed and resource usage
+        let media = null;
+        if (campaign.mediaUrl) {
+          try {
+            console.log(`📥 Downloading campaign media once from: ${campaign.mediaUrl}`);
+            media = await MessageMedia.fromUrl(campaign.mediaUrl);
+          } catch (e) {
+            console.error('⚠️ Error downloading campaign media:', e.message);
+          }
+        }
+
         for (const phone of phoneList) {
           let contact = null;
           try {
@@ -92,8 +103,7 @@ router.post('/:id/start', protect, async (req, res) => {
               personalizedMsg = personalizedMsg.replace(/\{\{name\}\}/gi, 'Friend');
             }
 
-            if (campaign.mediaUrl) {
-              const media = await MessageMedia.fromUrl(campaign.mediaUrl);
+            if (media) {
               await client.sendMessage(chatId, media, { caption: personalizedMsg });
             } else {
               await client.sendMessage(chatId, personalizedMsg);
@@ -191,6 +201,17 @@ router.post('/:id/resend', protect, async (req, res) => {
 
         const results = [];
 
+        // Pre-download media once outside the loop to optimize speed and resource usage
+        let media = null;
+        if (campaign.mediaUrl) {
+          try {
+            console.log(`📥 Downloading campaign media once for resend from: ${campaign.mediaUrl}`);
+            media = await MessageMedia.fromUrl(campaign.mediaUrl);
+          } catch (e) {
+            console.error('⚠️ Error downloading campaign resend media:', e.message);
+          }
+        }
+
         for (const phone of phoneList) {
           let contact = null;
           try {
@@ -218,8 +239,7 @@ router.post('/:id/resend', protect, async (req, res) => {
               personalizedMsg = personalizedMsg.replace(/\{\{phone\}\}/gi, phone);
             }
 
-            if (campaign.mediaUrl) {
-              const media = await MessageMedia.fromUrl(campaign.mediaUrl);
+            if (media) {
               await client.sendMessage(chatId, media, { caption: personalizedMsg });
             } else {
               await client.sendMessage(chatId, personalizedMsg);

@@ -234,6 +234,48 @@ const supportTicketSchema = new mongoose.Schema({
 
 const SupportTicket = mongoose.model('SupportTicket', supportTicketSchema);
 
+// ── GroupsCache Schema ─────────────────────────────────────────
+const groupsCacheSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, required: true, unique: true },
+  groups: [
+    {
+      id: { type: String, required: true },
+      name: { type: String, default: 'Unknown Group' },
+      participantCount: { type: Number, default: 0 },
+      description: { type: String, default: '' },
+    }
+  ],
+  lastUpdated: { type: Date, default: Date.now }
+}, { timestamps: true });
+
+const GroupsCache = mongoose.model('GroupsCache', groupsCacheSchema);
+
+// ── GroupParticipantsCache Schema ──────────────────────────────
+const groupParticipantsCacheSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, required: true },
+  groupId: { type: String, required: true },
+  participants: [
+    {
+      phone: { type: String, required: true },
+      isAdmin: { type: Boolean, default: false },
+      isSuperAdmin: { type: Boolean, default: false }
+    }
+  ],
+  lastUpdated: { type: Date, default: Date.now }
+}, { timestamps: true });
+
+groupParticipantsCacheSchema.index({ userId: 1, groupId: 1 }, { unique: true });
+const GroupParticipantsCache = mongoose.model('GroupParticipantsCache', groupParticipantsCacheSchema);
+
+// ── WhatsAppSession Schema ──────────────────────────────────────
+const whatsappSessionSchema = new mongoose.Schema({
+  guid: { type: String, required: true, unique: true },
+  sessionData: { type: Buffer, required: true },
+  lastSaved: { type: Date, default: Date.now }
+}, { timestamps: true });
+
+const WhatsAppSession = mongoose.model('WhatsAppSession', whatsappSessionSchema);
+
 module.exports = {
   User,
   Contact,
@@ -247,5 +289,8 @@ module.exports = {
   GlobalVar,
   Subscription,
   SuperAdmin,
-  SupportTicket
+  SupportTicket,
+  GroupsCache,
+  GroupParticipantsCache,
+  WhatsAppSession
 };

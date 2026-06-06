@@ -6,7 +6,8 @@ const STATUS_CONFIG = {
   connected: { color: 'var(--green)', badge: 'badge-green', label: 'Connected' },
   disconnected: { color: 'var(--red)', badge: 'badge-red', label: 'Disconnected' },
   connecting: { color: 'var(--yellow)', badge: 'badge-yellow', label: 'Connecting...' },
-  qr: { color: 'var(--yellow)', badge: 'badge-yellow', label: 'Scan QR Code' },
+  qr: { color: 'var(--yellow)', badge: 'badge-yellow', label: 'QR Waiting' },
+  reconnecting: { color: 'var(--yellow)', badge: 'badge-yellow', label: 'Reconnecting...' },
   auth_failure: { color: 'var(--red)', badge: 'badge-red', label: 'Auth Failed' },
   mismatch: { color: 'var(--red)', badge: 'badge-red', label: 'Number Mismatch' },
 };
@@ -32,7 +33,7 @@ export default function WhatsAppPage() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 28, padding: '16px', background: 'var(--bg2)', borderRadius: 12, border: '1px solid var(--border)' }}>
             <div style={{ width: 48, height: 48, borderRadius: 14, background: `${cfg.color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               {status === 'connected' ? <Wifi size={22} color={cfg.color} /> :
-                status === 'connecting' || status === 'qr' ? <Loader size={22} color={cfg.color} className="spin" /> :
+                status === 'connecting' || status === 'qr' || status === 'reconnecting' ? <Loader size={22} color={cfg.color} className="spin" /> :
                   <WifiOff size={22} color={cfg.color} />}
             </div>
             <div>
@@ -57,10 +58,10 @@ export default function WhatsAppPage() {
             <button
               className="btn btn-primary"
               onClick={connect}
-              disabled={status === 'connecting' || status === 'qr'}
+              disabled={status === 'connecting' || status === 'qr' || status === 'reconnecting'}
               style={{ width: '100%', justifyContent: 'center', padding: '12px' }}
             >
-              {(status === 'connecting' || status === 'qr') ? <><Loader size={15} className="spin" /> Connecting...</> : <><Wifi size={15} /> Connect WhatsApp</>}
+              {(status === 'connecting' || status === 'qr' || status === 'reconnecting') ? <><Loader size={15} className="spin" /> Connecting...</> : <><Wifi size={15} /> Connect WhatsApp</>}
             </button>
           ) : (
             <button className="btn btn-danger" onClick={disconnect} style={{ width: '100%', justifyContent: 'center', padding: '12px' }}>
