@@ -147,7 +147,8 @@ router.post('/admin-login', async (req, res) => {
 
     const token = jwt.sign({ id: admin._id, role: 'superadmin' }, process.env.JWT_SECRET, { expiresIn: '30d' });
     res.json({
-      id: admin._id, name: admin.name, email: admin.email, role: 'superadmin', token
+      id: admin._id, name: admin.name, email: admin.email, role: 'superadmin',
+      whatsappNumber: admin.whatsappNumber || null, token
     });
   } catch (e) {
     res.status(500).json({ message: e.message });
@@ -174,7 +175,8 @@ router.post('/admin-verify-otp', async (req, res) => {
     const token = jwt.sign({ id: admin._id, role: 'superadmin' }, process.env.JWT_SECRET, { expiresIn: '30d' });
 
     res.json({
-      id: admin._id, name: admin.name, email: admin.email, role: 'superadmin', token
+      id: admin._id, name: admin.name, email: admin.email, role: 'superadmin',
+      whatsappNumber: admin.whatsappNumber || null, token
     });
   } catch (e) {
     res.status(500).json({ message: e.message });

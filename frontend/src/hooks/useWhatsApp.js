@@ -6,7 +6,7 @@ const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || (process.env.NODE_ENV ===
 
 export function useWhatsApp() {
   const { user } = useAuth();
-  const [status, setStatus] = useState(localStorage.getItem('wa_phone') ? 'connected' : 'disconnected');
+  const [status, setStatus] = useState(user?.whatsappNumber || localStorage.getItem('wa_phone') ? 'connected' : 'disconnected');
   const [errorMsg, setErrorMsg] = useState(null);
   const [qrCode, setQrCode] = useState(null);
   const [phone, setPhone] = useState(localStorage.getItem('wa_phone') || null);
@@ -15,13 +15,18 @@ export function useWhatsApp() {
 
   useEffect(() => {
     if (!user?.id) return;
-    const socket = io(SOCKET_URL);
+    const socket = io(SOCKET_URL, { forceNew: true });
     socketRef.current = socket;
 
-    // Join this user's private room so we only receive OUR WhatsApp events
-    socket.on('connect', () => {
+    const identify = () => {
+      console.log(`🔌 [Socket] Emitting identify for user ${user.id} (role: ${user.role})`);
       socket.emit('whatsapp:identify', { userId: user.id, role: user.role });
-    });
+    };
+
+    if (socket.connected) {
+      identify();
+    }
+    socket.on('connect', identify);
 
     socket.on('whatsapp:status', ({ status, phone, name, error }) => {
       setStatus(status);

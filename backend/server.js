@@ -278,6 +278,34 @@ function emitToUser(guid, event, data) {
 }
 global.emitToUser = emitToUser;
 
+// ── Wipe Corrupt Session Helper ───────────────────────────────
+async function wipeCorruptSession(guid, userId, isSuper, msg) {
+  console.error(`❌ [Wipe] Persistent failure for [${guid}]. Wiping corrupt session. Reason: ${msg}`);
+  const sessionPath = path.join(__dirname, '.wwebjs_auth', `session-${guid}`);
+  try {
+    if (fs.existsSync(sessionPath)) {
+      fs.rmSync(sessionPath, { recursive: true, force: true });
+      console.log(`🧹 Wiped corrupt local session folder for [${guid}]`);
+    }
+  } catch (e) {
+    console.error(`⚠️ Error wiping local folder for [${guid}]:`, e.message);
+  }
+
+  try {
+    const { User, SuperAdmin, WhatsAppSession } = require('./models');
+    const account = isSuper ? await SuperAdmin.findById(userId) : await User.findById(userId);
+    if (account) {
+      account.whatsappNumber = null;
+      await account.save();
+      console.log(`✅ Database WhatsApp number cleared for [${guid}] due to persistent failure`);
+    }
+    await WhatsAppSession.deleteOne({ guid });
+    console.log(`🧹 Deleted corrupt session backup from MongoDB for [${guid}] due to persistent failure`);
+  } catch (err) {
+    console.error(`⚠️ Error wiping DB session for [${guid}]:`, err.message);
+  }
+}
+
 async function initWhatsApp(userId, isSuper = false, attempt = 1) {
   const guid = isSuper ? `sa_${userId}` : `user_${userId}`;
   if (pendingInits.has(guid)) {
@@ -603,19 +631,8 @@ async function _doInit(guid, userId, isSuper, attempt = 1) {
           _doInit(guid, userId, isSuper, attemptNum + 1);
         }, delay);
       } else {
-        // Persistent failures -> Wiping corrupt local session directory if it's stuck
-        const isStuck = msg.includes('context was destroyed') || msg.includes('detached') || msg.includes('already running');
-        if (isStuck) {
-          const sessionPath = path.join(__dirname, '.wwebjs_auth', `session-${guid}`);
-          try {
-            if (fs.existsSync(sessionPath)) {
-              fs.rmSync(sessionPath, { recursive: true, force: true });
-              console.log(`🧹 Wiped corrupt local session folder for [${guid}] after 5 failed attempts`);
-            }
-          } catch (e) { console.error('Cleanup error:', e.message); }
-        }
-
         console.error(`❌ WhatsApp init failed [${guid}] after ${attemptNum} attempts:`, msg);
+        wipeCorruptSession(guid, userId, isSuper, `init_failed: ${msg}`);
         updateStatus(guid, 'disconnected', { reason: 'init_failed' });
       }
     });
@@ -1064,13 +1081,14 @@ async function bootstrap() {
         const timestamp = statusTimestamps.get(guid) || Date.now();
         const timeDiff = Date.now() - timestamp;
 
-        // Stuck Connection Recovery: If state is 'connecting' or 'qr' for more than 3 minutes, force restart
+        // Stuck Connection Recovery: If state is 'connecting' or 'qr' for more than 3 minutes, wipe corrupt session
         if (client && (status === 'connecting' || status === 'qr') && timeDiff > 180000) {
-          console.warn(`🚨 [Keep-Alive] Client for [${guid}] is stuck in [${status}] for ${(timeDiff / 1000).toFixed(0)}s. Force-restarting...`);
+          console.warn(`🚨 [Keep-Alive] Client for [${guid}] is stuck in [${status}] for ${(timeDiff / 1000).toFixed(0)}s. Wiping corrupt session...`);
           try {
             await client.destroy();
           } catch (e) {}
           waClients.delete(guid);
+          wipeCorruptSession(guid, userId, isSuper, `stuck_in_${status}_for_${(timeDiff / 1000).toFixed(0)}s`);
           updateStatus(guid, 'disconnected', { reason: 'stuck_timeout' });
         }
 
