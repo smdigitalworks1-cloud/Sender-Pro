@@ -5,8 +5,10 @@ import { Wifi, WifiOff, Loader, Smartphone, Link2Off } from 'lucide-react';
 const STATUS_CONFIG = {
   connected: { color: 'var(--green)', badge: 'badge-green', label: 'Connected' },
   disconnected: { color: 'var(--red)', badge: 'badge-red', label: 'Disconnected' },
-  connecting: { color: 'var(--yellow)', badge: 'badge-yellow', label: 'Connecting...' },
-  qr: { color: 'var(--yellow)', badge: 'badge-yellow', label: 'QR Waiting' },
+  connecting: { color: 'var(--yellow)', badge: 'badge-yellow', label: 'Loading WhatsApp...' },
+  generating_qr: { color: 'var(--yellow)', badge: 'badge-yellow', label: 'Generating QR Code...' },
+  qr: { color: 'var(--yellow)', badge: 'badge-yellow', label: 'QR Code Ready' },
+  qr_failed: { color: 'var(--red)', badge: 'badge-red', label: 'Failed to Generate QR' },
   reconnecting: { color: 'var(--yellow)', badge: 'badge-yellow', label: 'Reconnecting...' },
   auth_failure: { color: 'var(--red)', badge: 'badge-red', label: 'Auth Failed' },
   mismatch: { color: 'var(--red)', badge: 'badge-red', label: 'Number Mismatch' },
@@ -33,7 +35,7 @@ export default function WhatsAppPage() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 28, padding: '16px', background: 'var(--bg2)', borderRadius: 12, border: '1px solid var(--border)' }}>
             <div style={{ width: 48, height: 48, borderRadius: 14, background: `${cfg.color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               {status === 'connected' ? <Wifi size={22} color={cfg.color} /> :
-                status === 'connecting' || status === 'qr' || status === 'reconnecting' ? <Loader size={22} color={cfg.color} className="spin" /> :
+                ['connecting', 'generating_qr', 'qr', 'reconnecting'].includes(status) ? <Loader size={22} color={cfg.color} className="spin" /> :
                   <WifiOff size={22} color={cfg.color} />}
             </div>
             <div>
@@ -58,10 +60,10 @@ export default function WhatsAppPage() {
             <button
               className="btn btn-primary"
               onClick={connect}
-              disabled={status === 'connecting' || status === 'qr' || status === 'reconnecting'}
+              disabled={['connecting', 'generating_qr', 'qr', 'reconnecting'].includes(status)}
               style={{ width: '100%', justifyContent: 'center', padding: '12px' }}
             >
-              {(status === 'connecting' || status === 'qr' || status === 'reconnecting') ? <><Loader size={15} className="spin" /> Connecting...</> : <><Wifi size={15} /> Connect WhatsApp</>}
+              {['connecting', 'generating_qr', 'qr', 'reconnecting'].includes(status) ? <><Loader size={15} className="spin" /> Connecting...</> : <><Wifi size={15} /> Connect WhatsApp</>}
             </button>
           ) : (
             <button className="btn btn-danger" onClick={disconnect} style={{ width: '100%', justifyContent: 'center', padding: '12px' }}>
@@ -103,6 +105,12 @@ export default function WhatsAppPage() {
               <div style={{ fontSize: 56, marginBottom: 16 }}>✅</div>
               <div style={{ fontFamily: 'var(--font-head)', fontSize: 18, fontWeight: 700, color: 'var(--green)' }}>Connected!</div>
               <div style={{ color: 'var(--text3)', marginTop: 6, fontSize: 13 }}>You can now send messages</div>
+            </div>
+          ) : status === 'qr_failed' ? (
+            <div style={{ textAlign: 'center' }}>
+              <Smartphone size={60} style={{ color: 'var(--red)', opacity: 0.5, marginBottom: 16 }} />
+              <div style={{ color: 'var(--red)', fontSize: 14, fontWeight: 600 }}>Failed to generate QR code</div>
+              <div style={{ color: 'var(--text3)', fontSize: 12, marginTop: 4 }}>The connection attempt timed out or failed. Please try again.</div>
             </div>
           ) : (
             <div style={{ textAlign: 'center' }}>

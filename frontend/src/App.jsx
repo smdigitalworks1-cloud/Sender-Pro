@@ -24,12 +24,6 @@ import AdminPage from './pages/AdminPage';
 import ProfilePage from './pages/ProfilePage';
 import SupportPage from './pages/SupportPage';
 
-// Load Razorpay script once
-if (!window.Razorpay) {
-  const s = document.createElement('script');
-  s.src = 'https://checkout.razorpay.com/v1/checkout.js';
-  document.head.appendChild(s);
-}
 
 function PrivateRoute({ children }) {
   const { user, loading } = useAuth();

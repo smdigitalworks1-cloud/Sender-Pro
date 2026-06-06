@@ -8,9 +8,11 @@ const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
 const cron = require('node-cron');
 const path = require('path');
+const fs = require('fs');
 const { saveSessionToDB, restoreSessionFromDB } = require('./utils/sessionStore');
 require('dotenv').config({ override: true });
 if (originalPort) process.env.PORT = originalPort; // Restore environment PORT to prevent override
+
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -78,12 +80,30 @@ const waClients = new Map(); // globalUid → Client (globalUid is "user_#ID" or
 const waStatuses = new Map(); // globalUid → status string
 const pendingInits = new Set(); // Tracks active initialization sequences to prevent concurrent double-initializations
 const statusTimestamps = new Map(); // globalUid → timestamp of last status change
+const qrTimeouts = new Map(); // globalUid → NodeJS.Timeout
 
 function updateStatus(guid, status, data = {}) {
+  // Clear timeout if a terminal status is reached
+  if (['qr', 'connected', 'disconnected', 'qr_failed', 'auth_failure'].includes(status)) {
+    if (qrTimeouts.has(guid)) {
+      clearTimeout(qrTimeouts.get(guid));
+      qrTimeouts.delete(guid);
+    }
+  }
+
   waStatuses.set(guid, status);
   statusTimestamps.set(guid, Date.now());
+  
+  // Emit status update to user
   emitToUser(guid, 'whatsapp:status', { status, ...data });
+
+  // Specifically emit whatsapp:qr if status is 'qr' to support useWhatsApp hook
+  if (status === 'qr' && data.qr) {
+    console.log(`✉️ [QR] QR sent to frontend for [${guid}]`);
+    emitToUser(guid, 'whatsapp:qr', { qr: data.qr });
+  }
 }
+
 
 // Return a specific account's client
 function getClientForUser(userId, isSuper = false) {
@@ -191,15 +211,42 @@ async function _doInit(guid, userId, isSuper) {
     },
   });
 
+  console.log(`✅ [init] WhatsApp client initialized for [${guid}]`);
+
   waClients.set(guid, client);
   updateStatus(guid, 'connecting');
 
+  // Register the 30-second timeout for QR code generation or successful connection
+  if (qrTimeouts.has(guid)) {
+    clearTimeout(qrTimeouts.get(guid));
+  }
+  const timeoutId = setTimeout(async () => {
+    console.error(`❌ [Failure] Connection failed (timeout) for [${guid}] - QR not generated within 30s`);
+    const activeClient = waClients.get(guid);
+    if (activeClient) {
+      try {
+        console.log(`🧹 [Timeout] Terminating client browser for [${guid}] due to timeout...`);
+        await activeClient.destroy();
+        console.log(`✅ [Timeout] Client browser terminated for [${guid}]`);
+      } catch (err) {
+        console.error(`⚠️ [Timeout] Error destroying client browser for [${guid}]:`, err.message);
+      }
+      waClients.delete(guid);
+    }
+    updateStatus(guid, 'qr_failed', { error: 'WhatsApp Connection Timeout: QR Code not generated within 30 seconds.' });
+  }, 30000);
+  qrTimeouts.set(guid, timeoutId);
+
   client.on('qr', async (qr) => {
-    console.log(`📲 QR event received for [${guid}]`);
+    console.log(`📲 [QR] QR generated for [${guid}]`);
     try {
       const qrImg = await qrcode.toDataURL(qr);
       updateStatus(guid, 'qr', { qr: qrImg });
     } catch (err) { console.error(`QR error [${guid}]:`, err.message); }
+  });
+
+  client.on('authenticated', () => {
+    console.log(`🔐 [Auth] Client authenticated for [${guid}]`);
   });
 
   client.on('ready', async () => {
@@ -222,7 +269,7 @@ async function _doInit(guid, userId, isSuper) {
         phone: connectedNumber,
         name: info.pushname,
       });
-      console.log(`✅ WhatsApp ready [${guid}]:`, connectedNumber);
+      console.log(`✅ [Ready] Client ready for [${guid}]. Phone: ${connectedNumber}`);
 
       // 💾 Backup session files to database on ready
       await saveSessionToDB(guid);
@@ -283,7 +330,7 @@ async function _doInit(guid, userId, isSuper) {
   });
 
   client.on('auth_failure', async (msg) => {
-    console.error(`🔐 Auth failure [${guid}]:`, msg);
+    console.error(`❌ [Failure] Connection failed (auth_failure) for [${guid}]:`, msg);
     updateStatus(guid, 'disconnected', { reason: 'auth_failure' });
 
     try {
@@ -315,6 +362,11 @@ async function _doInit(guid, userId, isSuper) {
       await client.destroy();
     } catch (e) {}
     waClients.delete(guid);
+
+    console.log(`🔄 [Auth Failure] Automatically re-initializing WhatsApp for [${guid}] in 2s...`);
+    setTimeout(() => {
+      initWhatsApp(userId, isSuper);
+    }, 2000);
   });
 
   client.on('message', async (msg) => {
@@ -362,8 +414,10 @@ async function _doInit(guid, userId, isSuper) {
   // ── Safe initialize with auto-retry on ProtocolError ──────────
   const tryInit = (attempt = 1) => {
     console.log(`🔄 WhatsApp init attempt ${attempt} [${guid}]`);
+    updateStatus(guid, 'generating_qr');
     client.initialize().catch(async (err) => {
       const msg = err.message || '';
+      console.error(`❌ [Failure] Connection failed (initialize) for [${guid}] on attempt ${attempt}:`, msg);
       const isTimeout = msg.includes('ProtocolError') || msg.includes('protocolTimeout') || msg.includes('timed out');
       const isStuck = msg.includes('already running') || msg.includes('context was destroyed') || msg.includes('detached');
 
@@ -381,7 +435,6 @@ async function _doInit(guid, userId, isSuper) {
         console.warn(`⚠️ WhatsApp init issue [${guid}] — retrying in 10s (attempt ${attempt}/3)... Error: ${msg.substring(0, 50)}`);
 
         if (isStuck) {
-          const fs = require('fs');
           const sessionPath = path.join(__dirname, '.wwebjs_auth', `session-${guid}`);
           try {
             if (fs.existsSync(sessionPath)) {
@@ -715,7 +768,6 @@ app.get('*', (req, res) => {
 });
 
 // ── Pre-populate WhatsApp Web Cache ───────────────────────────
-const fs = require('fs');
 const WEB_VERSION = '2.3000.1039860984-alpha';
 async function ensureWebCacheExists() {
   const cacheDir = path.join(__dirname, '.wwebjs_cache');
@@ -950,4 +1002,7 @@ exec('chromium --version || chromium-browser --version || echo "no version"', (e
 console.log('🔍 PUPPETEER_EXECUTABLE_PATH:', process.env.PUPPETEER_EXECUTABLE_PATH);
 
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => console.log(`🚀 Server on http://localhost:${PORT}`));
+server.listen(PORT, () => {
+  console.log(`🚀 [Server] Server started on port ${PORT}`);
+  console.log(`🚀 Server on http://localhost:${PORT}`);
+});

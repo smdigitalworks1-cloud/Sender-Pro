@@ -224,10 +224,6 @@ export default function PricingPage() {
                     );
                 })}
             </div>
-
-            {!window.Razorpay && (
-                <script src="https://checkout.razorpay.com/v1/checkout.js" />
-            )}
         </div>
     );
 }
