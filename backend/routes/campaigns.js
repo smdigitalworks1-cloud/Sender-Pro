@@ -93,8 +93,8 @@ router.post('/:id/start', protect, async (req, res) => {
 
             if (contact) {
               personalizedMsg = personalizedMsg.replace(/\{\{name\}\}/gi, contact.name || 'Friend');
-              if (contact.variables) {
-                for (const [key, value] of contact.variables.entries()) {
+              if (contact.variables && typeof contact.variables === 'object') {
+                for (const [key, value] of Object.entries(contact.variables)) {
                   const regex = new RegExp(`\\{\\{${key}\\}\\}`, 'gi');
                   personalizedMsg = personalizedMsg.replace(regex, value || '');
                 }
@@ -228,8 +228,8 @@ router.post('/:id/resend', protect, async (req, res) => {
               personalizedMsg = personalizedMsg.replace(/\{\{name\}\}/gi, contact.name || 'Friend');
               personalizedMsg = personalizedMsg.replace(/\{\{phone\}\}/gi, contact.phone || phone);
 
-              if (contact.variables) {
-                for (const [key, value] of contact.variables.entries()) {
+              if (contact.variables && typeof contact.variables === 'object') {
+                for (const [key, value] of Object.entries(contact.variables)) {
                   const regex = new RegExp(`\\{\\{${key}\\}\\}`, 'gi');
                   personalizedMsg = personalizedMsg.replace(regex, value || '');
                 }
