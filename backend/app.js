@@ -48,7 +48,30 @@ const app = express();
 // Define a dummy helper so routes don't crash when calling undefined
 app.set('getClientForUser', () => null); 
 
-app.use(cors({ origin: '*' }));
+const allowedOrigins = [
+  'https://senderpro.smdigitalworks.com',
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'http://localhost:8000',
+  'http://localhost:5000',
+  'http://127.0.0.1:3000',
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:5000'
+];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps, curl, postman)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin) || origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+      return callback(null, true);
+    }
+    return callback(new Error('Not allowed by CORS'), false);
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  credentials: true,
+  optionsSuccessStatus: 200
+}));
 app.use(express.json({ limit: '50mb' }));
 app.use((req, res, next) => {
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
@@ -111,5 +134,23 @@ app.use(express.static(path.join(__dirname, '../frontend/build')));
 // app.get('*', (req, res) => {
 //   res.sendFile(path.join(__dirname, '../frontend/build', 'index.html'));
 // });
+
+// Custom error handling middleware to set CORS headers on exceptions
+app.use((err, req, res, next) => {
+  console.error('🔥 Express Error Handler:', err.message || err);
+  
+  const origin = req.headers.origin;
+  if (origin && (allowedOrigins.includes(origin) || origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:'))) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  }
+  
+  res.status(err.status || 500).json({
+    success: false,
+    message: err.message || 'Internal Server Error'
+  });
+});
 
 module.exports = app;

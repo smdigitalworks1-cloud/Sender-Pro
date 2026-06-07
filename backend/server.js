@@ -157,9 +157,30 @@ puppeteer.connect = async function(opts) {
 
 
 
+const allowedOrigins = [
+  'https://senderpro.smdigitalworks.com',
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'http://localhost:8000',
+  'http://localhost:5000',
+  'http://127.0.0.1:3000',
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:5000'
+];
+
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: '*', methods: ['GET', 'POST'] }
+  cors: {
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin) || origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+        return callback(null, true);
+      }
+      return callback(new Error('Not allowed by CORS'), false);
+    },
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    credentials: true
+  }
 });
 
 // ── Global Error Catching for Puppeteer / Whatsapp-web.js Unhandled Errors
@@ -343,9 +364,40 @@ async function initWhatsApp(userId, isSuper = false, attempt = 1) {
   }
 }
 
+function cleanSessionLocks(guid) {
+  const sessionDir = path.join(__dirname, '.wwebjs_auth', `session-${guid}`);
+  if (!fs.existsSync(sessionDir)) return;
+
+  const filesToDelete = [
+    path.join(sessionDir, 'SingletonLock'),
+    path.join(sessionDir, 'SingletonCookie'),
+    path.join(sessionDir, 'SingletonSocket'),
+    path.join(sessionDir, 'lockfile'),
+    path.join(sessionDir, 'lock'),
+    path.join(sessionDir, 'Default', 'SingletonLock'),
+    path.join(sessionDir, 'Default', 'SingletonCookie'),
+    path.join(sessionDir, 'Default', 'lockfile'),
+    path.join(sessionDir, 'Default', 'lock')
+  ];
+
+  filesToDelete.forEach(file => {
+    try {
+      if (fs.existsSync(file)) {
+        fs.unlinkSync(file);
+        console.log(`🧹 [cleanSessionLocks] Deleted lock file: ${file}`);
+      }
+    } catch (err) {
+      console.warn(`⚠️ [cleanSessionLocks] Failed to delete lock file ${file}:`, err.message);
+    }
+  });
+}
+
 async function _doInit(guid, userId, isSuper, attempt = 1) {
   // 📥 Restore session from MongoDB if disk folder is missing
   await restoreSessionFromDB(guid);
+
+  // Clean lock files to prevent "The browser is already running" errors
+  cleanSessionLocks(guid);
 
   const client = new Client({
     authStrategy: new LocalAuth({ clientId: guid }),
@@ -374,7 +426,7 @@ async function _doInit(guid, userId, isSuper, attempt = 1) {
         '--disable-renderer-backgrounding',
         '--disable-background-timer-throttling',
         '--disable-backgrounding-occluded-windows',
-        `--js-flags=--max-old-space-size=${process.env.PUPPETEER_MAX_OLD_SPACE_SIZE || '2048'}`,
+        `--js-flags=--max-old-space-size=${process.env.PUPPETEER_MAX_OLD_SPACE_SIZE || '512'}`,
         '--disable-sync',
         '--no-default-browser-check',
         '--disable-software-rasterizer',
@@ -561,10 +613,7 @@ async function _doInit(guid, userId, isSuper, attempt = 1) {
     } catch (e) {}
     waClients.delete(guid);
 
-    console.log(`🔄 [Auth Failure] Automatically re-initializing WhatsApp for [${guid}] in 2s...`);
-    setTimeout(() => {
-      initWhatsApp(userId, isSuper);
-    }, 2000);
+    console.log(`ℹ️ [Auth Failure] Persistent authentication failure for [${guid}]. Client stopped.`);
   });
 
   client.on('message', async (msg) => {

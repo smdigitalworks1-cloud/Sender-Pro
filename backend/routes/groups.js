@@ -6,7 +6,100 @@ const router = express.Router();
 
 // Helper to check if the WhatsApp client browser and page are fully ready and stable
 function isClientReady(client) {
-  return client && client.info && client.pupPage && !client.pupPage.isClosed();
+  try {
+    return client && client.info && client.pupPage && !client.pupPage.isClosed() && client.pupPage.browser() && client.pupPage.browser().isConnected();
+  } catch (e) {
+    return false;
+  }
+}
+
+async function fetchParticipantsFromClient(client, groupId) {
+  let formatted = null;
+
+  // 1. Fast Browser Evaluation with LID Phone Resolution & Timeout (12 seconds)
+  try {
+    formatted = await Promise.race([
+      client.pupPage.evaluate(async (gId) => {
+        if (!window.Store || !window.Store.Chat) return null;
+        const chat = window.Store.Chat.get(gId);
+        if (!chat) return null;
+        
+        let metadata = chat.groupMetadata;
+        if (!metadata && window.Store.GroupMetadata) {
+          try {
+            metadata = await window.Store.GroupMetadata.find(gId);
+          } catch (e) {
+            console.error('Failed to find group metadata in browser evaluation:', e.message || e);
+          }
+        }
+
+        if (!metadata) return null;
+        
+        const getPhone = (id) => {
+          if (!id) return '';
+          if (id.server === 'lid' && window.Store.LidUtils?.getPhoneNumber) {
+            const pnWid = window.Store.LidUtils.getPhoneNumber(id);
+            return pnWid ? pnWid.user : id.user;
+          }
+          return id.user || id._serialized?.split('@')[0] || '';
+        };
+
+        const participants = metadata.participants.models || metadata.participants || [];
+        return participants.map(p => {
+          const phone = getPhone(p.id);
+          return {
+            phone: phone || 'Unknown',
+            isAdmin: p.isAdmin || false,
+            isSuperAdmin: p.isSuperAdmin || false,
+          };
+        });
+      }, groupId),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Browser evaluation timed out')), 12000))
+    ]);
+  } catch (err) {
+    console.log('[GroupGrabber] Fast participant fetch failed or timed out:', err.message);
+  }
+
+  // 2. Fallback: Standard chat fetch if browser evaluation failed (with 6s timeout)
+  if (!formatted) {
+    console.log('[GroupGrabber] Falling back to getChatById() for participants...');
+    try {
+      const chat = await Promise.race([
+        client.getChatById(groupId),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('getChatById timed out')), 6000))
+      ]);
+
+      if (chat && chat.isGroup) {
+        let participants = chat.participants || [];
+        if (participants.length === 0 && chat.id) {
+          try {
+            const meta = await chat.groupMetadata;
+            if (meta && meta.participants) {
+              participants = meta.participants;
+            }
+          } catch (err) {
+            console.error('[GroupGrabber] Fallback metadata load failed:', err.message);
+          }
+        }
+
+        formatted = participants.map(p => {
+          let phone = '';
+          if (p.id) {
+            phone = p.id.user || (typeof p.id === 'string' ? p.id.split('@')[0] : p.id._serialized?.split('@')[0]);
+          }
+          return {
+            phone: phone || 'Unknown',
+            isAdmin: p.isAdmin || false,
+            isSuperAdmin: p.isSuperAdmin || false,
+          };
+        });
+      }
+    } catch (err) {
+      console.error('[GroupGrabber] Fallback chat fetch failed or timed out:', err.message);
+    }
+  }
+
+  return formatted;
 }
 
 // Helper to asynchronously fetch and cache groups from Puppeteer
@@ -134,113 +227,52 @@ router.get('/:groupId/participants', protect, async (req, res) => {
     // Check participants cache
     const cachedParticipants = await GroupParticipantsCache.findOne({ userId, groupId });
 
-    if (!isClientReady(client)) {
-      if (cachedParticipants) {
-        console.log(`ℹ️ [GroupGrabber] Client not ready. Returning cached participants (fallback) for group ${groupId}`);
-        return res.json(cachedParticipants.participants);
+    if (cachedParticipants) {
+      // Return cached participants immediately to prevent blocking the request
+      res.json(cachedParticipants.participants);
+
+      // Trigger update asynchronously in the background if stale (older than 5 minutes)
+      const isStale = (Date.now() - new Date(cachedParticipants.lastUpdated).getTime()) > 300000;
+      if (isStale && isClientReady(client)) {
+        (async () => {
+          try {
+            console.log(`[GroupGrabber] Background updating stale cache for group ${groupId}...`);
+            const fresh = await fetchParticipantsFromClient(client, groupId);
+            if (fresh && fresh.length > 0) {
+              await GroupParticipantsCache.findOneAndUpdate(
+                { userId, groupId },
+                { participants: fresh, lastUpdated: new Date() },
+                { upsert: true, new: true }
+              );
+              console.log(`[GroupGrabber] Background cache update success: ${fresh.length} participants for ${groupId}`);
+            }
+          } catch (err) {
+            console.error(`[GroupGrabber] Background cache update failed for ${groupId}:`, err.message);
+          }
+        })();
       }
+      return;
+    }
+
+    // No cache exists - fetch synchronously
+    if (!isClientReady(client)) {
       return res.status(400).json({ message: 'WhatsApp client is not connected' });
     }
 
-    if (cachedParticipants) {
-      const isStale = (Date.now() - new Date(cachedParticipants.lastUpdated).getTime()) > 300000; // 5 minutes
-      if (!isStale) {
-        return res.json(cachedParticipants.participants);
-      }
-    }
+    console.log(`[GroupGrabber] Fetching fresh participants synchronously for group ${groupId}...`);
+    const formatted = await fetchParticipantsFromClient(client, groupId);
 
-    let formatted = null;
-
-    // 1. Fast Browser Evaluation with LID Phone Resolution & Timeout
-    try {
-      formatted = await Promise.race([
-        client.pupPage.evaluate(async (gId) => {
-          if (!window.Store || !window.Store.Chat) return null;
-          const chat = window.Store.Chat.get(gId);
-          if (!chat) return null;
-          
-          let metadata = chat.groupMetadata;
-          if (!metadata && window.Store.GroupMetadata) {
-            try {
-              metadata = await window.Store.GroupMetadata.find(gId);
-            } catch (e) {
-              console.error('Failed to find group metadata in browser evaluation:', e.message || e);
-            }
-          }
-
-          if (!metadata) return null;
-          
-          const getPhone = (id) => {
-            if (!id) return '';
-            if (id.server === 'lid' && window.Store.LidUtils?.getPhoneNumber) {
-              const pnWid = window.Store.LidUtils.getPhoneNumber(id);
-              return pnWid ? pnWid.user : id.user;
-            }
-            return id.user || id._serialized?.split('@')[0] || '';
-          };
-
-          const participants = metadata.participants.models || metadata.participants || [];
-          return participants.map(p => {
-            const phone = getPhone(p.id);
-            return {
-              phone: phone || 'Unknown',
-              isAdmin: p.isAdmin || false,
-              isSuperAdmin: p.isSuperAdmin || false,
-            };
-          });
-        }, groupId),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Browser evaluation timed out')), 90000))
-      ]);
-    } catch (err) {
-      console.log('[GroupGrabber] Fast participant fetch failed or timed out:', err.message);
-    }
-
-    // 2. Fallback: Standard chat fetch if browser evaluation failed
     if (!formatted) {
-      console.log('[GroupGrabber] Falling back to getChatById() for participants...');
-      const chat = await client.getChatById(groupId);
-      if (!chat || !chat.isGroup) {
-        if (cachedParticipants) {
-          console.warn('[GroupGrabber] Group not found or slow fallback. Returning cached participants.');
-          return res.json(cachedParticipants.participants);
-        }
-        return res.status(404).json({ message: 'Group not found' });
-      }
-
-      let participants = chat.participants || [];
-      if (participants.length === 0 && chat.id) {
-        try {
-          const meta = await chat.groupMetadata;
-          if (meta && meta.participants) {
-            participants = meta.participants;
-          }
-        } catch (err) {
-          console.error('[GroupGrabber] Fallback metadata load failed:', err.message);
-        }
-      }
-
-      formatted = participants.map(p => {
-        let phone = '';
-        if (p.id) {
-          phone = p.id.user || (typeof p.id === 'string' ? p.id.split('@')[0] : p.id._serialized?.split('@')[0]);
-        }
-        return {
-          phone: phone || 'Unknown',
-          isAdmin: p.isAdmin || false,
-          isSuperAdmin: p.isSuperAdmin || false,
-        };
-      });
+      return res.status(408).json({ message: 'Failed to fetch group participants (request timed out)' });
     }
 
     // Cache the resolved participants list
-    if (formatted && formatted.length > 0) {
-      await GroupParticipantsCache.findOneAndUpdate(
-        { userId, groupId },
-        { participants: formatted, lastUpdated: new Date() },
-        { upsert: true, new: true }
-      );
-      console.log(`[GroupGrabber] Cached ${formatted.length} participants for group ${groupId}`);
-    }
+    await GroupParticipantsCache.findOneAndUpdate(
+      { userId, groupId },
+      { participants: formatted, lastUpdated: new Date() },
+      { upsert: true, new: true }
+    );
+    console.log(`[GroupGrabber] Cached ${formatted.length} participants for group ${groupId}`);
 
     res.json(formatted);
   } catch (e) {
@@ -277,43 +309,10 @@ router.post('/:groupId/save', protect, async (req, res) => {
         return res.status(400).json({ message: 'WhatsApp client is not connected or ready. Please wait a few seconds and try again.' });
       }
       console.log('[GroupGrabber] Participants not cached. Fetching from browser for saving...');
-      const freshParts = await Promise.race([
-        client.pupPage.evaluate(async (gId) => {
-          if (!window.Store || !window.Store.Chat) return null;
-          const chat = window.Store.Chat.get(gId);
-          if (!chat) return null;
-          
-          let metadata = chat.groupMetadata;
-          if (!metadata && window.Store.GroupMetadata) {
-            try {
-              metadata = await window.Store.GroupMetadata.find(gId);
-            } catch (e) {
-              console.error('Failed to find group metadata for save in browser:', e.message || e);
-            }
-          }
-
-          const getPhone = (id) => {
-            if (!id) return '';
-            if (id.server === 'lid' && window.Store.LidUtils?.getPhoneNumber) {
-              const pnWid = window.Store.LidUtils.getPhoneNumber(id);
-              return pnWid ? pnWid.user : id.user;
-            }
-            return id.user || id._serialized?.split('@')[0] || '';
-          };
-
-          const name = chat.name || chat.formattedTitle || 'Unknown Group';
-          const parts = metadata ? (metadata.participants?.models || metadata.participants || []).map(p => {
-            return getPhone(p.id);
-          }) : [];
-          
-          return { name, parts };
-        }, groupId),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Browser evaluation timed out')), 90000))
-      ]);
-
-      if (freshParts && freshParts.parts.length > 0) {
-        groupName = freshParts.name;
-        participants = freshParts.parts.map(phone => ({ id: { user: phone } }));
+      
+      const freshParts = await fetchParticipantsFromClient(client, groupId);
+      if (freshParts && freshParts.length > 0) {
+        participants = freshParts.map(p => ({ id: { user: p.phone } }));
       }
     }
 
