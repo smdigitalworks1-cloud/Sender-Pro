@@ -58,6 +58,7 @@ const wrapPage = (page) => {
       } catch (err) {
         const msg = err.message || '';
         const isNav = msg.includes('Execution context was destroyed') || msg.includes('navigation');
+        const isTransient = isNav || msg.includes('timed out') || msg.includes('timeout') || msg.includes('Protocol error');
         const isClosed = msg.includes('closed') || msg.includes('detached') || msg.includes('target');
 
         if (isClosed) {
@@ -65,9 +66,9 @@ const wrapPage = (page) => {
           throw err;
         }
 
-        if (isNav && retries > 1) {
+        if (isTransient && retries > 1) {
           retries--;
-          console.warn(`⚠️ [Puppeteer Wrapper] Evaluation failed due to navigation. Retrying in 1.5s... (${retries} retries left). Error: ${msg}`);
+          console.warn(`⚠️ [Puppeteer Wrapper] Evaluation failed (transient error). Retrying in 1.5s... (${retries} retries left). Error: ${msg}`);
           await new Promise(r => setTimeout(r, 1500));
           try {
             if (!page.isClosed()) {
@@ -368,7 +369,7 @@ async function _doInit(guid, userId, isSuper, attempt = 1) {
         '--disable-renderer-backgrounding',
         '--disable-background-timer-throttling',
         '--disable-backgrounding-occluded-windows',
-        `--js-flags=--max-old-space-size=${process.env.PUPPETEER_MAX_OLD_SPACE_SIZE || '512'}`,
+        `--js-flags=--max-old-space-size=${process.env.PUPPETEER_MAX_OLD_SPACE_SIZE || '2048'}`,
         '--disable-sync',
         '--no-default-browser-check',
         '--disable-software-rasterizer',
@@ -750,7 +751,8 @@ async function loadSchedules() {
           }
 
           const { runAutomation } = require('./utils/automationEngine');
-          runAutomation(auto._id, userClient).catch(e => console.error(e));
+          const getClient = () => getClientForUser(auto.userId, auto.isSuper);
+          runAutomation(auto._id, getClient).catch(e => console.error(e));
 
           // mark as completed to avoid rerunning
           auto.status = 'completed';

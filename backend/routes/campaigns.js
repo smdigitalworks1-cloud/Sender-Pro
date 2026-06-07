@@ -111,10 +111,25 @@ router.post('/:id/start', protect, async (req, res) => {
             // 3. Strip any remaining unreplaced {{variable}} placeholders
             personalizedMsg = personalizedMsg.replace(/\{\{[^}]+\}\}/g, '');
 
+            let activeClient = req.app.get('getClientForUser')(campaign.userId, campaign.isSuper);
+            if (!activeClient || !activeClient.info) {
+              console.log(`[Campaign] Client not ready for user ${campaign.userId}. Retrying connection...`);
+              let retries = 0;
+              const maxRetries = 5;
+              while (retries < maxRetries && (!activeClient || !activeClient.info)) {
+                await sleep(2000);
+                activeClient = req.app.get('getClientForUser')(campaign.userId, campaign.isSuper);
+                retries++;
+              }
+              if (!activeClient || !activeClient.info) {
+                throw new Error('WhatsApp client disconnected');
+              }
+            }
+
             if (media) {
-              await client.sendMessage(chatId, media, { caption: personalizedMsg });
+              await activeClient.sendMessage(chatId, media, { caption: personalizedMsg });
             } else {
-              await client.sendMessage(chatId, personalizedMsg);
+              await activeClient.sendMessage(chatId, personalizedMsg);
             }
             campaign.sent += 1;
             console.log(`✅ [Campaign] Sent to ${phone}`);
@@ -254,10 +269,25 @@ router.post('/:id/resend', protect, async (req, res) => {
             // 3. Strip any remaining unreplaced {{variable}} placeholders
             personalizedMsg = personalizedMsg.replace(/\{\{[^}]+\}\}/g, '');
 
+            let activeClient = req.app.get('getClientForUser')(campaign.userId, req.user.role === 'superadmin');
+            if (!activeClient || !activeClient.info) {
+              console.log(`[Resend] Client not ready for user ${campaign.userId}. Retrying connection...`);
+              let retries = 0;
+              const maxRetries = 5;
+              while (retries < maxRetries && (!activeClient || !activeClient.info)) {
+                await sleep(2000);
+                activeClient = req.app.get('getClientForUser')(campaign.userId, req.user.role === 'superadmin');
+                retries++;
+              }
+              if (!activeClient || !activeClient.info) {
+                throw new Error('WhatsApp client disconnected');
+              }
+            }
+
             if (media) {
-              await client.sendMessage(chatId, media, { caption: personalizedMsg });
+              await activeClient.sendMessage(chatId, media, { caption: personalizedMsg });
             } else {
-              await client.sendMessage(chatId, personalizedMsg);
+              await activeClient.sendMessage(chatId, personalizedMsg);
             }
             campaign.sent += 1;
             console.log(`✅ [Resend] Sent to ${phone}`);

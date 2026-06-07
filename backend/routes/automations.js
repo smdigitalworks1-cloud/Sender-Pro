@@ -162,7 +162,8 @@ router.post('/:id/run', protect, async (req, res) => {
             const client = req.app.get('getClientForUser')(req.user._id, automation.isSuper);
             if (!client || !client.info) return res.status(400).json({ error: 'WhatsApp not connected. Please connect your WhatsApp first.' });
 
-            runAutomation(automation._id, client).catch(err => console.error(err));
+            const getClient = () => req.app.get('getClientForUser')(req.user._id, automation.isSuper);
+            runAutomation(automation._id, getClient).catch(err => console.error(err));
             res.json({ message: 'Automation Started Now', automation });
         }
     } catch (err) {

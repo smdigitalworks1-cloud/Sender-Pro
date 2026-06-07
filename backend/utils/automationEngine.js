@@ -146,15 +146,21 @@ const runAutomation = async (automationId, getClient) => {
                         global.emitToUser(guid, 'automation:log_update', { automationId });
                     }
 
-                    let client;
-                    if (typeof getClient === 'function') {
-                        client = getClient();
-                    } else {
-                        client = getClient;
+                    let client = typeof getClient === 'function' ? getClient() : getClient;
+
+                    if (!client || !client.info) {
+                        console.log(`[Automation] WhatsApp client not ready for user ${automation.userId}. Retrying connection...`);
+                        let retries = 0;
+                        const maxRetries = 5;
+                        while (retries < maxRetries && (!client || !client.info)) {
+                            await new Promise(resolve => setTimeout(resolve, 2000));
+                            client = typeof getClient === 'function' ? getClient() : getClient;
+                            retries++;
+                        }
                     }
 
                     if (!client || !client.info) {
-                        console.error('WhatsApp client not ready for automation.');
+                        console.error('WhatsApp client not ready for automation after retries.');
                         msgLog.status = 'failed';
                         msgLog.error = 'WhatsApp disconnected';
                         msgLog.executedAt = new Date();
