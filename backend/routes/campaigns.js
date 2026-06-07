@@ -2,9 +2,28 @@ const express = require('express');
 const protect = require('../middleware/auth');
 const { Campaign, Contact, GlobalVar } = require('../models');
 const { MessageMedia } = require('whatsapp-web.js');
+const fetch = require('node-fetch');
 const router = express.Router();
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function downloadMediaWithTimeout(url, timeoutMs = 25000) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeoutId);
+    if (!response.ok) throw new Error(`HTTP status ${response.status}`);
+    const buffer = await response.buffer();
+    const contentType = response.headers.get('content-type') || 'application/octet-stream';
+    const base64Data = buffer.toString('base64');
+    const filename = url.substring(url.lastIndexOf('/') + 1).split('?')[0] || 'file';
+    return new MessageMedia(contentType, base64Data, filename);
+  } catch (err) {
+    clearTimeout(timeoutId);
+    throw err;
+  }
+}
 
 // ── In-memory set of actively running campaign IDs ──────────────
 // Once a campaign is in here, it CANNOT be stopped by delete/stop
@@ -66,18 +85,34 @@ router.post('/:id/start', protect, async (req, res) => {
 
         const results = [];
 
-        // Pre-download media once outside the loop to optimize speed and resource usage
+        // Pre-download media once outside the loop with a strict timeout
         let media = null;
         if (campaign.mediaUrl) {
           try {
             console.log(`📥 Downloading campaign media once from: ${campaign.mediaUrl}`);
-            media = await MessageMedia.fromUrl(campaign.mediaUrl);
+            media = await downloadMediaWithTimeout(campaign.mediaUrl);
           } catch (e) {
             console.error('⚠️ Error downloading campaign media:', e.message);
           }
         }
 
         for (const phone of phoneList) {
+          // Abort loop immediately if client is completely disconnected
+          let activeClient = req.app.get('getClientForUser')(campaign.userId, campaign.isSuper);
+          if (!activeClient || !activeClient.info) {
+            console.log(`[Campaign] Client not ready for user ${campaign.userId}. Retrying connection...`);
+            let retries = 0;
+            const maxRetries = 3;
+            while (retries < maxRetries && (!activeClient || !activeClient.info)) {
+              await sleep(2000);
+              activeClient = req.app.get('getClientForUser')(campaign.userId, campaign.isSuper);
+              retries++;
+            }
+            if (!activeClient || !activeClient.info) {
+              throw new Error('WhatsApp client disconnected. Aborting campaign loop.');
+            }
+          }
+
           let contact = null;
           try {
             const chatId = `${phone}@c.us`;
@@ -110,21 +145,6 @@ router.post('/:id/start', protect, async (req, res) => {
 
             // 3. Strip any remaining unreplaced {{variable}} placeholders
             personalizedMsg = personalizedMsg.replace(/\{\{[^}]+\}\}/g, '');
-
-            let activeClient = req.app.get('getClientForUser')(campaign.userId, campaign.isSuper);
-            if (!activeClient || !activeClient.info) {
-              console.log(`[Campaign] Client not ready for user ${campaign.userId}. Retrying connection...`);
-              let retries = 0;
-              const maxRetries = 5;
-              while (retries < maxRetries && (!activeClient || !activeClient.info)) {
-                await sleep(2000);
-                activeClient = req.app.get('getClientForUser')(campaign.userId, campaign.isSuper);
-                retries++;
-              }
-              if (!activeClient || !activeClient.info) {
-                throw new Error('WhatsApp client disconnected');
-              }
-            }
 
             if (media) {
               await activeClient.sendMessage(chatId, media, { caption: personalizedMsg });
@@ -225,18 +245,34 @@ router.post('/:id/resend', protect, async (req, res) => {
 
         const results = [];
 
-        // Pre-download media once outside the loop to optimize speed and resource usage
+        // Pre-download media once outside the loop with a strict timeout
         let media = null;
         if (campaign.mediaUrl) {
           try {
             console.log(`📥 Downloading campaign media once for resend from: ${campaign.mediaUrl}`);
-            media = await MessageMedia.fromUrl(campaign.mediaUrl);
+            media = await downloadMediaWithTimeout(campaign.mediaUrl);
           } catch (e) {
             console.error('⚠️ Error downloading campaign resend media:', e.message);
           }
         }
 
         for (const phone of phoneList) {
+          // Abort loop immediately if client is completely disconnected
+          let activeClient = req.app.get('getClientForUser')(campaign.userId, req.user.role === 'superadmin');
+          if (!activeClient || !activeClient.info) {
+            console.log(`[Resend] Client not ready for user ${campaign.userId}. Retrying connection...`);
+            let retries = 0;
+            const maxRetries = 3;
+            while (retries < maxRetries && (!activeClient || !activeClient.info)) {
+              await sleep(2000);
+              activeClient = req.app.get('getClientForUser')(campaign.userId, req.user.role === 'superadmin');
+              retries++;
+            }
+            if (!activeClient || !activeClient.info) {
+              throw new Error('WhatsApp client disconnected. Aborting campaign resend loop.');
+            }
+          }
+
           let contact = null;
           try {
             const chatId = `${phone}@c.us`;
@@ -268,21 +304,6 @@ router.post('/:id/resend', protect, async (req, res) => {
 
             // 3. Strip any remaining unreplaced {{variable}} placeholders
             personalizedMsg = personalizedMsg.replace(/\{\{[^}]+\}\}/g, '');
-
-            let activeClient = req.app.get('getClientForUser')(campaign.userId, req.user.role === 'superadmin');
-            if (!activeClient || !activeClient.info) {
-              console.log(`[Resend] Client not ready for user ${campaign.userId}. Retrying connection...`);
-              let retries = 0;
-              const maxRetries = 5;
-              while (retries < maxRetries && (!activeClient || !activeClient.info)) {
-                await sleep(2000);
-                activeClient = req.app.get('getClientForUser')(campaign.userId, req.user.role === 'superadmin');
-                retries++;
-              }
-              if (!activeClient || !activeClient.info) {
-                throw new Error('WhatsApp client disconnected');
-              }
-            }
 
             if (media) {
               await activeClient.sendMessage(chatId, media, { caption: personalizedMsg });
