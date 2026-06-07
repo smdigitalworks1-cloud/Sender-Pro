@@ -85,6 +85,9 @@ const wrapPage = (page) => {
 
 const originalLaunch = puppeteer.launch;
 puppeteer.launch = async function(opts) {
+  opts = opts || {};
+  opts.protocolTimeout = 300000;
+  opts.timeout = 300000;
   console.log('🚀 [Puppeteer Interceptor] Intercepting puppeteer.launch. Headless:', opts.headless);
   const browser = await originalLaunch.call(puppeteer, opts);
   console.log('✅ [Puppeteer Interceptor] Browser launched successfully.');
@@ -118,6 +121,9 @@ puppeteer.launch = async function(opts) {
 
 const originalConnect = puppeteer.connect;
 puppeteer.connect = async function(opts) {
+  opts = opts || {};
+  opts.protocolTimeout = 300000;
+  opts.timeout = 300000;
   console.log('🚀 [Puppeteer Interceptor] Intercepting puppeteer.connect...');
   const browser = await originalConnect.call(puppeteer, opts);
   console.log('✅ [Puppeteer Interceptor] Browser connected successfully.');

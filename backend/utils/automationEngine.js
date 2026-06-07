@@ -110,7 +110,11 @@ const runAutomation = async (automationId, getClient) => {
                     // Once finished, update status to success (Wait Finished)
                     delayLog.status = 'success';
                     delayLog.executedAt = new Date();
-                    await delayLog.save();
+                    try {
+                        await delayLog.save();
+                    } catch (saveErr) {
+                        console.warn(`[Automation] Could not update delayLog status: ${saveErr.message}`);
+                    }
 
                     if (global.emitToUser) {
                         global.emitToUser(guid, 'automation:log_update', { automationId });
@@ -188,7 +192,11 @@ const runAutomation = async (automationId, getClient) => {
                         // Success log
                         msgLog.status = 'success';
                         msgLog.executedAt = new Date();
-                        await msgLog.save();
+                        try {
+                            await msgLog.save();
+                        } catch (saveErr) {
+                            console.warn(`[Automation] Could not update msgLog success status: ${saveErr.message}`);
+                        }
                         console.log(`Message sent to ${groupId}`);
 
                         if (global.emitToUser) {
@@ -203,7 +211,11 @@ const runAutomation = async (automationId, getClient) => {
                         msgLog.status = 'failed';
                         msgLog.error = err.message;
                         msgLog.executedAt = new Date();
-                        await msgLog.save();
+                        try {
+                            await msgLog.save();
+                        } catch (saveErr) {
+                            console.warn(`[Automation] Could not update msgLog failed status: ${saveErr.message}`);
+                        }
                         
                         if (global.emitToUser) {
                             global.emitToUser(guid, 'automation:log_update', { automationId });
