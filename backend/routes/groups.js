@@ -2,6 +2,7 @@
 const express = require('express');
 const protect = require('../middleware/auth');
 const { Contact, GroupsCache, GroupParticipantsCache } = require('../models');
+const { getChatWithRetry } = require('../utils/messageQueue');
 const router = express.Router();
 
 // Helper to check if the WhatsApp client browser and page are fully ready and stable
@@ -16,25 +17,19 @@ function isClientReady(client) {
 async function fetchParticipantsFromClient(client, groupId) {
   let formatted = null;
 
-  // 1. Fast Browser Evaluation with LID Phone Resolution & Timeout (12 seconds)
+  // 1. Fast Browser Evaluation (strictly synchronous in browser to prevent event loop block/hang)
   try {
     formatted = await Promise.race([
-      client.pupPage.evaluate(async (gId) => {
+      client.pupPage.evaluate((gId) => {
         if (!window.Store || !window.Store.Chat) return null;
         const chat = window.Store.Chat.get(gId);
         if (!chat) return null;
         
         let metadata = chat.groupMetadata;
         if (!metadata && window.Store.GroupMetadata) {
-          try {
-            metadata = await window.Store.GroupMetadata.find(gId);
-          } catch (e) {
-            console.error('Failed to find group metadata in browser evaluation:', e.message || e);
-          }
+          metadata = window.Store.GroupMetadata.get(gId); // Sync retrieve only
         }
 
-        if (!metadata) return null;
-        
         const getPhone = (id) => {
           if (!id) return '';
           if (id.server === 'lid' && window.Store.LidUtils?.getPhoneNumber) {
@@ -44,9 +39,11 @@ async function fetchParticipantsFromClient(client, groupId) {
           return id.user || id._serialized?.split('@')[0] || '';
         };
 
-        const participants = metadata.participants.models || metadata.participants || [];
+        const participants = (metadata && (metadata.participants?.models || metadata.participants)) || chat.participants || [];
+        if (participants.length === 0) return null;
+
         return participants.map(p => {
-          const phone = getPhone(p.id);
+          const phone = getPhone(p.id || p);
           return {
             phone: phone || 'Unknown',
             isAdmin: p.isAdmin || false,
@@ -60,14 +57,11 @@ async function fetchParticipantsFromClient(client, groupId) {
     console.log('[GroupGrabber] Fast participant fetch failed or timed out:', err.message);
   }
 
-  // 2. Fallback: Standard chat fetch if browser evaluation failed (with 6s timeout)
+  // 2. Fallback: Controlled getChatById with retries, exponential backoff, and caching
   if (!formatted) {
-    console.log('[GroupGrabber] Falling back to getChatById() for participants...');
+    console.log('[GroupGrabber] Falling back to getChatWithRetry() for participants...');
     try {
-      const chat = await Promise.race([
-        client.getChatById(groupId),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('getChatById timed out')), 6000))
-      ]);
+      const chat = await getChatWithRetry(client, groupId);
 
       if (chat && chat.isGroup) {
         let participants = chat.participants || [];

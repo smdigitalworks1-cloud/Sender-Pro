@@ -2,6 +2,7 @@ const Automation = require('../models/Automation');
 const AutomationStep = require('../models/AutomationStep');
 const AutomationLog = require('../models/AutomationLog');
 const { MessageMedia } = require('whatsapp-web.js');
+const { verifyClientReadyForSend, enqueueMessage } = require('./messageQueue');
 
 const runAutomation = async (automationId, getClient) => {
     try {
@@ -183,11 +184,14 @@ const runAutomation = async (automationId, getClient) => {
                             catch (e) { console.error('Media load error:', e.message); }
                         }
 
-                        if (media) {
-                            await client.sendMessage(groupId, media, { caption: step.message });
-                        } else {
-                            await client.sendMessage(groupId, step.message);
-                        }
+                        verifyClientReadyForSend(client);
+                        await enqueueMessage(guid, async () => {
+                            if (media) {
+                                await client.sendMessage(groupId, media, { caption: step.message });
+                            } else {
+                                await client.sendMessage(groupId, step.message);
+                            }
+                        });
 
                         // Success log
                         msgLog.status = 'success';

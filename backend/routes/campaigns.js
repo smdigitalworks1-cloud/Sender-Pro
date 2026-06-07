@@ -4,6 +4,7 @@ const { Campaign, Contact, GlobalVar } = require('../models');
 const { MessageMedia } = require('whatsapp-web.js');
 const fetch = require('node-fetch');
 const router = express.Router();
+const { verifyClientReadyForSend, enqueueMessage } = require('../utils/messageQueue');
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -96,7 +97,19 @@ router.post('/:id/start', protect, async (req, res) => {
           }
         }
 
-        for (const phone of phoneList) {
+        const batchSize = 15;
+        const batchDelay = 12000; // 12 seconds delay between batches
+        const guid = campaign.isSuper ? `sa_${campaign.userId}` : `user_${campaign.userId}`;
+
+        for (let i = 0; i < phoneList.length; i++) {
+          const phone = phoneList[i];
+
+          // Batch pause to prevent rate limits
+          if (i > 0 && i % batchSize === 0) {
+            console.log(`⏳ [Campaign] Completed batch of ${batchSize} messages. Pausing for ${batchDelay / 1000}s...`);
+            await sleep(batchDelay);
+          }
+
           // Abort loop immediately if client is completely disconnected
           let activeClient = req.app.get('getClientForUser')(campaign.userId, campaign.isSuper);
           if (!activeClient || !activeClient.info) {
@@ -114,6 +127,10 @@ router.post('/:id/start', protect, async (req, res) => {
           }
 
           let contact = null;
+          let sent = false;
+          let lastErr = null;
+          const sendAttempts = 3;
+
           try {
             const chatId = `${phone}@c.us`;
             console.log(`📤 [Campaign] Sending to: ${phone}`);
@@ -138,7 +155,6 @@ router.post('/:id/start', protect, async (req, res) => {
                 }
               }
             } else {
-              // No contact record found — use phone as fallback
               personalizedMsg = personalizedMsg.replace(/\{\{name\}\}/gi, 'Friend');
               personalizedMsg = personalizedMsg.replace(/\{\{phone\}\}/gi, phone);
             }
@@ -146,19 +162,47 @@ router.post('/:id/start', protect, async (req, res) => {
             // 3. Strip any remaining unreplaced {{variable}} placeholders
             personalizedMsg = personalizedMsg.replace(/\{\{[^}]+\}\}/g, '');
 
-            if (media) {
-              await activeClient.sendMessage(chatId, media, { caption: personalizedMsg });
-            } else {
-              await activeClient.sendMessage(chatId, personalizedMsg);
+            for (let attempt = 1; attempt <= sendAttempts; attempt++) {
+              try {
+                // Verify client before sending
+                verifyClientReadyForSend(activeClient);
+
+                // Enqueue the message to run sequentially
+                await enqueueMessage(guid, async () => {
+                  if (media) {
+                    await activeClient.sendMessage(chatId, media, { caption: personalizedMsg });
+                  } else {
+                    await activeClient.sendMessage(chatId, personalizedMsg);
+                  }
+                });
+
+                sent = true;
+                break;
+              } catch (err) {
+                lastErr = err;
+                console.warn(`[Campaign] Send attempt ${attempt}/${sendAttempts} failed to ${phone}: ${err.message}`);
+                if (attempt < sendAttempts) {
+                  await sleep(attempt * 2000); // 2s, 4s delay
+                  activeClient = req.app.get('getClientForUser')(campaign.userId, campaign.isSuper);
+                }
+              }
             }
-            campaign.sent += 1;
-            console.log(`✅ [Campaign] Sent to ${phone}`);
-            results.push({ phone, name: contact ? contact.name : 'Unknown', status: 'sent', time: new Date() });
+
+            if (sent) {
+              campaign.sent += 1;
+              console.log(`✅ [Campaign] Sent to ${phone}`);
+              results.push({ phone, name: contact ? contact.name : 'Unknown', status: 'sent', time: new Date() });
+            } else {
+              campaign.failed += 1;
+              console.error(`❌ [Campaign] All attempts failed to ${phone}:`, lastErr.message);
+              results.push({ phone, name: contact ? contact.name : 'Unknown', status: 'failed', error: lastErr.message, time: new Date() });
+            }
           } catch (err) {
             console.error(`❌ [Campaign] Send failed to ${phone}:`, err.message);
             campaign.failed += 1;
             results.push({ phone, name: contact ? contact.name : 'Unknown', status: 'failed', error: err.message, time: new Date() });
           }
+
           campaign.results = results;
           await campaign.save();
           await sleep(campaign.delay * 1000);
@@ -256,7 +300,19 @@ router.post('/:id/resend', protect, async (req, res) => {
           }
         }
 
-        for (const phone of phoneList) {
+        const batchSize = 15;
+        const batchDelay = 12000; // 12 seconds delay between batches
+        const guid = campaign.isSuper ? `sa_${campaign.userId}` : `user_${campaign.userId}`;
+
+        for (let i = 0; i < phoneList.length; i++) {
+          const phone = phoneList[i];
+
+          // Batch pause to prevent rate limits
+          if (i > 0 && i % batchSize === 0) {
+            console.log(`⏳ [Campaign] Completed batch of ${batchSize} messages. Pausing for ${batchDelay / 1000}s...`);
+            await sleep(batchDelay);
+          }
+
           // Abort loop immediately if client is completely disconnected
           let activeClient = req.app.get('getClientForUser')(campaign.userId, req.user.role === 'superadmin');
           if (!activeClient || !activeClient.info) {
@@ -274,6 +330,10 @@ router.post('/:id/resend', protect, async (req, res) => {
           }
 
           let contact = null;
+          let sent = false;
+          let lastErr = null;
+          const sendAttempts = 3;
+
           try {
             const chatId = `${phone}@c.us`;
             console.log(`📤 [Resend] Sending to: ${phone}`);
@@ -305,14 +365,41 @@ router.post('/:id/resend', protect, async (req, res) => {
             // 3. Strip any remaining unreplaced {{variable}} placeholders
             personalizedMsg = personalizedMsg.replace(/\{\{[^}]+\}\}/g, '');
 
-            if (media) {
-              await activeClient.sendMessage(chatId, media, { caption: personalizedMsg });
-            } else {
-              await activeClient.sendMessage(chatId, personalizedMsg);
+            for (let attempt = 1; attempt <= sendAttempts; attempt++) {
+              try {
+                // Verify client before sending
+                verifyClientReadyForSend(activeClient);
+
+                // Enqueue the message to run sequentially
+                await enqueueMessage(guid, async () => {
+                  if (media) {
+                    await activeClient.sendMessage(chatId, media, { caption: personalizedMsg });
+                  } else {
+                    await activeClient.sendMessage(chatId, personalizedMsg);
+                  }
+                });
+
+                sent = true;
+                break;
+              } catch (err) {
+                lastErr = err;
+                console.warn(`[Campaign] Send attempt ${attempt}/${sendAttempts} failed to ${phone}: ${err.message}`);
+                if (attempt < sendAttempts) {
+                  await sleep(attempt * 2000); // 2s, 4s delay
+                  activeClient = req.app.get('getClientForUser')(campaign.userId, req.user.role === 'superadmin');
+                }
+              }
             }
-            campaign.sent += 1;
-            console.log(`✅ [Resend] Sent to ${phone}`);
-            results.push({ phone, name: contact ? contact.name : 'Unknown', status: 'sent', time: new Date() });
+
+            if (sent) {
+              campaign.sent += 1;
+              console.log(`✅ [Resend] Sent to ${phone}`);
+              results.push({ phone, name: contact ? contact.name : 'Unknown', status: 'sent', time: new Date() });
+            } else {
+              campaign.failed += 1;
+              console.error(`❌ [Resend] All attempts failed to ${phone}:`, lastErr.message);
+              results.push({ phone, name: contact ? contact.name : 'Unknown', status: 'failed', error: lastErr.message, time: new Date() });
+            }
           } catch (err) {
             console.error(`❌ [Resend] Send failed to ${phone}:`, err.message);
             campaign.failed += 1;

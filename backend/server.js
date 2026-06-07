@@ -10,6 +10,7 @@ const cron = require('node-cron');
 const path = require('path');
 const fs = require('fs');
 const { saveSessionToDB, restoreSessionFromDB } = require('./utils/sessionStore');
+const { verifyClientReadyForSend, enqueueMessage } = require('./utils/messageQueue');
 require('dotenv').config({ override: true });
 if (originalPort) process.env.PORT = originalPort; // Restore environment PORT to prevent override
 
@@ -21,6 +22,13 @@ const wrapPage = (page) => {
   page._isWrapped = true;
 
   console.log('🛡️ [Puppeteer Wrapper] Wrapping page object for stability...');
+
+  try {
+    page.setDefaultNavigationTimeout(300000); // 5 min
+    page.setDefaultTimeout(300000); // 5 min
+  } catch (e) {
+    console.warn('⚠️ [Puppeteer Wrapper] Error setting page default timeouts:', e.message);
+  }
 
   // 1. Intercept page.goto to wait for network stability
   const originalGoto = page.goto;
@@ -645,11 +653,18 @@ async function _doInit(guid, userId, isSuper, attempt = 1) {
               global.autoReplyCooldowns.set(cooldownKey, now);
             }
 
-            if (rule.mediaUrl) {
-              const media = await MessageMedia.fromUrl(rule.mediaUrl);
-              await client.sendMessage(msg.from, media, { caption: rule.response });
-            } else {
-              await msg.reply(rule.response);
+            try {
+              verifyClientReadyForSend(client);
+              await enqueueMessage(guid, async () => {
+                if (rule.mediaUrl) {
+                  const media = await MessageMedia.fromUrl(rule.mediaUrl);
+                  await client.sendMessage(msg.from, media, { caption: rule.response });
+                } else {
+                  await client.sendMessage(msg.from, rule.response);
+                }
+              });
+            } catch (arErr) {
+              console.error(`❌ [AutoReply] Send failed for [${guid}]:`, arErr.message);
             }
             break;
           }
@@ -833,14 +848,19 @@ async function runScheduledJob(schedule) {
     catch (e) { console.error('Error loading media:', e.message); }
   }
 
+  const guid = schedule.isSuper ? `sa_${schedule.userId}` : `user_${schedule.userId}`;
+
   // 1. Send to contacts
   for (const phone of (schedule.contacts || [])) {
     try {
-      if (media) {
-        await client.sendMessage(`${phone}@c.us`, media, { caption: schedule.message });
-      } else {
-        await client.sendMessage(`${phone}@c.us`, schedule.message);
-      }
+      verifyClientReadyForSend(client);
+      await enqueueMessage(guid, async () => {
+        if (media) {
+          await client.sendMessage(`${phone}@c.us`, media, { caption: schedule.message });
+        } else {
+          await client.sendMessage(`${phone}@c.us`, schedule.message);
+        }
+      });
     } catch (err) {
       console.error(`Error sending scheduled msg to ${phone}:`, err.message);
     }
@@ -850,11 +870,14 @@ async function runScheduledJob(schedule) {
   // 2. Send to groups
   for (const groupId of (schedule.targetGroups || [])) {
     try {
-      if (media) {
-        await client.sendMessage(groupId, media, { caption: schedule.message });
-      } else {
-        await client.sendMessage(groupId, schedule.message);
-      }
+      verifyClientReadyForSend(client);
+      await enqueueMessage(guid, async () => {
+        if (media) {
+          await client.sendMessage(groupId, media, { caption: schedule.message });
+        } else {
+          await client.sendMessage(groupId, schedule.message);
+        }
+      });
     } catch (err) {
       console.error(`Error sending scheduled msg to group ${groupId}:`, err.message);
     }
@@ -1146,6 +1169,34 @@ async function bootstrap() {
           waClients.delete(guid);
           wipeCorruptSession(guid, userId, isSuper, `stuck_in_${status}_for_${(timeDiff / 1000).toFixed(0)}s`);
           updateStatus(guid, 'disconnected', { reason: 'stuck_timeout' });
+          continue;
+        }
+
+        // Stuck Connection / Frozen Browser Recovery
+        if (client && client.pupPage && !client.pupPage.isClosed() && status === 'connected') {
+          try {
+            // Ping the browser with a 5-second timeout
+            await Promise.race([
+              client.pupPage.evaluate(() => 1),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('Health check timed out')), 5000))
+            ]);
+          } catch (err) {
+            console.error(`🚨 [Keep-Alive] Browser for [${guid}] is frozen/unresponsive: ${err.message}. Triggering automatic recovery...`);
+            try {
+              await client.destroy();
+            } catch (destroyErr) {
+              console.warn(`⚠️ Error destroying unresponsive client [${guid}]:`, destroyErr.message);
+            }
+            waClients.delete(guid);
+            cleanSessionLocks(guid);
+            updateStatus(guid, 'connecting', { error: 'Reconnecting due to frozen browser...' });
+            
+            // Wait 2s and restart
+            setTimeout(() => {
+              initWhatsApp(userId, isSuper);
+            }, 2000);
+            continue;
+          }
         }
 
         // Active client exists, but status is 'disconnected' (unexpected crash)
