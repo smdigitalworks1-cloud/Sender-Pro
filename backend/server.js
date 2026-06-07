@@ -278,6 +278,14 @@ function updateStatus(guid, status, data = {}) {
 }
 
 
+function isClientReady(client) {
+  try {
+    return client && client.info && client.pupPage && !client.pupPage.isClosed() && client.pupPage.browser() && client.pupPage.browser().isConnected();
+  } catch (e) {
+    return false;
+  }
+}
+
 // Return a specific account's client
 function getClientForUser(userId, isSuper = false) {
   const primaryGuid = isSuper ? `sa_${userId}` : `user_${userId}`;
@@ -754,9 +762,34 @@ io.on('connection', (socket) => {
 
     const client = waClients.get(guid);
     if (client) {
-      try { await client.logout(); } catch { }
-      try { await client.destroy(); } catch { }
-      waClients.delete(guid);
+      let logoutSucceeded = false;
+      try {
+        if (isClientReady(client)) {
+          console.log(`🔌 [disconnect] Client is ready. Attempting clean client.logout() for [${guid}]...`);
+          await Promise.race([
+            client.logout().then(() => {
+              logoutSucceeded = true;
+              console.log(`✅ [disconnect] client.logout() resolved for [${guid}]`);
+            }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Logout timed out')), 8000))
+          ]);
+        } else {
+          console.log(`🔌 [disconnect] Client is not fully ready/connected. Skipping client.logout() and proceeding to destroy.`);
+        }
+      } catch (err) {
+        console.warn(`⚠️ [disconnect] client.logout() failed or timed out for [${guid}]:`, err.message);
+      }
+
+      // If the client is still in the map, destroy it
+      if (waClients.has(guid)) {
+        console.log(`🧹 [disconnect] Destroying client for [${guid}]...`);
+        try {
+          await client.destroy();
+        } catch (e) {
+          console.error(`⚠️ [disconnect] Error destroying client [${guid}]:`, e.message);
+        }
+        waClients.delete(guid);
+      }
     }
 
     // Clear whatsappNumber in DB and delete backup

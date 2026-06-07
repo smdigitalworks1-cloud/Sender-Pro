@@ -17,7 +17,12 @@ function addFilesToZip(zip, baseDir, currentDir = baseDir) {
     'BrowserMetrics',
     'component_crx_cache',
     'CertificateRevocation',
-    '.pma'
+    '.pma',
+    'SingletonLock',
+    'SingletonCookie',
+    'SingletonSocket',
+    'lockfile',
+    'lock'
   ];
 
   for (const item of items) {

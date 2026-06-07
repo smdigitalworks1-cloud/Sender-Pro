@@ -34,7 +34,7 @@ export function useWhatsApp() {
       if (phone) { setPhone(phone); localStorage.setItem('wa_phone', phone); }
       if (name) { setWaName(name); }
       if (status === 'connected') setQrCode(null);
-      if (['disconnected', 'auth_failure', 'mismatch'].includes(status)) {
+      if (['disconnected', 'auth_failure', 'mismatch', 'logging_out'].includes(status)) {
         localStorage.removeItem('wa_phone');
         setPhone(null);
         setWaName(null);
@@ -58,6 +58,20 @@ export function useWhatsApp() {
 
   const disconnect = () => {
     socketRef.current?.emit('whatsapp:disconnect', { userId: user?.id, role: user?.role });
+    localStorage.removeItem('wa_phone');
+    const saved = localStorage.getItem('user');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        parsed.whatsappNumber = null;
+        localStorage.setItem('user', JSON.stringify(parsed));
+      } catch (e) {}
+    }
+    setStatus('disconnected');
+    setPhone(null);
+    setWaName(null);
+    setQrCode(null);
+    setErrorMsg(null);
   };
 
   return { status, qrCode, phone, waName, errorMsg, connect, disconnect };
