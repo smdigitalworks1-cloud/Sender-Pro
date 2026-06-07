@@ -38,7 +38,7 @@ async function fetchAndCacheGroups(client, userId) {
           };
         });
       }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Browser evaluation timed out')), 15000))
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Browser evaluation timed out')), 90000))
     ]);
 
     if (storeGroups && storeGroups.length > 0) {
@@ -189,7 +189,7 @@ router.get('/:groupId/participants', protect, async (req, res) => {
             };
           });
         }, groupId),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Browser evaluation timed out')), 15000))
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Browser evaluation timed out')), 90000))
       ]);
     } catch (err) {
       console.log('[GroupGrabber] Fast participant fetch failed or timed out:', err.message);
@@ -308,7 +308,7 @@ router.post('/:groupId/save', protect, async (req, res) => {
           
           return { name, parts };
         }, groupId),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Browser evaluation timed out')), 15000))
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Browser evaluation timed out')), 90000))
       ]);
 
       if (freshParts && freshParts.parts.length > 0) {
