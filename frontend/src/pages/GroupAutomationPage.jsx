@@ -680,7 +680,10 @@ export default function GroupAutomationPage() {
                 toast.success("Paused");
             }
             loadAutomations(selectedProject.id);
-        } catch (err) { toast.error("Execution error"); }
+        } catch (err) {
+            const errMsg = err.response?.data?.error || err.response?.data?.message || err.message || "Execution error";
+            toast.error(errMsg);
+        }
     }
 
     const deleteAutomation = async (a) => {
