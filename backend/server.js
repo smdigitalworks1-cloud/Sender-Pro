@@ -488,6 +488,7 @@ async function _doInit(guid, userId, isSuper, attempt = 1) {
   qrTimeouts.set(guid, timeoutId);
 
   client.on('qr', async (qr) => {
+    if (waClients.get(guid) !== client) return;
     console.log(`📲 [QR] QR generated for [${guid}]`);
     try {
       const qrImg = await qrcode.toDataURL(qr);
@@ -496,11 +497,13 @@ async function _doInit(guid, userId, isSuper, attempt = 1) {
   });
 
   client.on('authenticated', () => {
+    if (waClients.get(guid) !== client) return;
     console.log(`🔐 [Auth] Client authenticated for [${guid}]`);
     authFailures.delete(guid);
   });
 
   client.on('ready', async () => {
+    if (waClients.get(guid) !== client) return;
     authFailures.delete(guid);
     try {
       const info = client.info;
@@ -529,6 +532,7 @@ async function _doInit(guid, userId, isSuper, attempt = 1) {
   });
 
   client.on('disconnected', async (reason) => {
+    if (waClients.get(guid) !== client) return;
     const status = waStatuses.get(guid);
     const sessionDir = path.join(__dirname, '.wwebjs_auth', `session-${guid}`);
     const shouldReconnect = status !== 'logging_out' && reason !== 'LOGOUT' && fs.existsSync(sessionDir);
@@ -582,6 +586,7 @@ async function _doInit(guid, userId, isSuper, attempt = 1) {
   });
 
   client.on('auth_failure', async (msg) => {
+    if (waClients.get(guid) !== client) return;
     console.error(`❌ [Failure] Connection failed (auth_failure) for [${guid}]:`, msg);
     
     const attempts = (authFailures.get(guid) || 0) + 1;
@@ -647,6 +652,7 @@ async function _doInit(guid, userId, isSuper, attempt = 1) {
   });
 
   client.on('message', async (msg) => {
+    if (waClients.get(guid) !== client) return;
     try {
       if (msg.from === 'status@broadcast') return;
       if (msg.from.includes('@g.us')) return; // Ignore Group Messages
@@ -700,6 +706,10 @@ async function _doInit(guid, userId, isSuper, attempt = 1) {
     console.log(`🔄 WhatsApp init attempt ${attemptNum}/5 [${guid}]`);
     updateStatus(guid, 'generating_qr');
     client.initialize().catch(async (err) => {
+      if (waClients.get(guid) !== client) {
+        console.log(`ℹ️ [tryInit] Aborting retry loop for [${guid}]: client has been replaced/destroyed.`);
+        return;
+      }
       const msg = err.message || '';
       console.error(`❌ [Failure] Connection failed (initialize) for [${guid}] on attempt ${attemptNum}/5:`, msg);
 
