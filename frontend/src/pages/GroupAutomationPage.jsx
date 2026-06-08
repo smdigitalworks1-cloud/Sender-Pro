@@ -1002,7 +1002,10 @@ export default function GroupAutomationPage() {
             setSelectedAutomation(prev => ({ ...prev, status: 'active' }));
             setBuilderTab('enrollment');
             loadLogs(selectedAutomation.id);
-        } catch (err) { toast.error("Execution error"); }
+        } catch (err) {
+            const errMsg = err.response?.data?.error || err.response?.data?.message || err.message || "Execution error";
+            toast.error(errMsg);
+        }
     }
 
     const pauseExecution = async () => {
@@ -1010,7 +1013,9 @@ export default function GroupAutomationPage() {
             const { data } = await api.patch(`/automations/${selectedAutomation.id}/status`, { status: "paused" });
             toast.success("Paused");
             setSelectedAutomation(prev => ({ ...prev, status: 'paused' }));
-        } catch (err) { }
+        } catch (err) {
+            toast.error(err.response?.data?.error || err.message || "Failed to pause");
+        }
     }
 
     useEffect(() => { loadProjects(); }, []);
