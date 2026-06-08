@@ -254,6 +254,7 @@ const pendingInits = new Set(); // Tracks active initialization sequences to pre
 const statusTimestamps = new Map(); // globalUid → timestamp of last status change
 const qrTimeouts = new Map(); // globalUid → NodeJS.Timeout
 const authFailures = new Map(); // globalUid → retry count
+const initTimeouts = new Map(); // globalUid → NodeJS.Timeout for scheduled retries
 
 function updateStatus(guid, status, data = {}) {
   // Clear timeout if a terminal status is reached
@@ -352,6 +353,14 @@ async function wipeCorruptSession(guid, userId, isSuper, msg) {
 
 async function initWhatsApp(userId, isSuper = false, attempt = 1) {
   const guid = isSuper ? `sa_${userId}` : `user_${userId}`;
+
+  // Clear any existing scheduled retry timeouts to prevent parallel overlapping loops
+  if (initTimeouts.has(guid)) {
+    console.log(`🧹 [initWhatsApp] Clearing existing retry timeout for [${guid}]`);
+    clearTimeout(initTimeouts.get(guid));
+    initTimeouts.delete(guid);
+  }
+
   if (pendingInits.has(guid)) {
     console.log(`⏳ [initWhatsApp] Skipping duplicate call: initialization already in progress for [${guid}]`);
     return;
@@ -588,9 +597,14 @@ async function _doInit(guid, userId, isSuper, attempt = 1) {
       } catch (e) {}
       waClients.delete(guid);
 
-      setTimeout(() => {
+      if (initTimeouts.has(guid)) {
+        clearTimeout(initTimeouts.get(guid));
+      }
+      const retryTimeoutId = setTimeout(() => {
+        initTimeouts.delete(guid);
         initWhatsApp(userId, isSuper, attempts + 1);
       }, delay);
+      initTimeouts.set(guid, retryTimeoutId);
       return;
     }
 
@@ -705,9 +719,14 @@ async function _doInit(guid, userId, isSuper, attempt = 1) {
 
         updateStatus(guid, 'connecting');
         
-        setTimeout(() => {
+        if (initTimeouts.has(guid)) {
+          clearTimeout(initTimeouts.get(guid));
+        }
+        const retryTimeoutId = setTimeout(() => {
+          initTimeouts.delete(guid);
           _doInit(guid, userId, isSuper, attemptNum + 1);
         }, delay);
+        initTimeouts.set(guid, retryTimeoutId);
       } else {
         console.error(`❌ WhatsApp init failed [${guid}] after ${attemptNum} attempts:`, msg);
         wipeCorruptSession(guid, userId, isSuper, `init_failed: ${msg}`);
