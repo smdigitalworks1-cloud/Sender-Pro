@@ -2,7 +2,7 @@ const Automation = require('../models/Automation');
 const AutomationStep = require('../models/AutomationStep');
 const AutomationLog = require('../models/AutomationLog');
 const { MessageMedia } = require('whatsapp-web.js');
-const { verifyClientReadyForSend, enqueueMessage } = require('./messageQueue');
+const { verifyClientReadyForSend, enqueueMessage, getChatWithRetry } = require('./messageQueue');
 
 const runAutomation = async (automationId, getClient) => {
     try {
@@ -186,10 +186,13 @@ const runAutomation = async (automationId, getClient) => {
 
                         verifyClientReadyForSend(client);
                         await enqueueMessage(guid, async () => {
+                            console.log(`[Automation] Loading chat for group: ${groupId}`);
+                            const chat = await getChatWithRetry(client, groupId);
+                            console.log(`[Automation] Group chat loaded successfully. Sending message to ${groupId}...`);
                             if (media) {
-                                await client.sendMessage(groupId, media, { caption: step.message });
+                                await chat.sendMessage(media, { caption: step.message });
                             } else {
-                                await client.sendMessage(groupId, step.message);
+                                await chat.sendMessage(step.message);
                             }
                         });
 

@@ -10,7 +10,7 @@ const cron = require('node-cron');
 const path = require('path');
 const fs = require('fs');
 const { saveSessionToDB, restoreSessionFromDB } = require('./utils/sessionStore');
-const { verifyClientReadyForSend, enqueueMessage } = require('./utils/messageQueue');
+const { verifyClientReadyForSend, enqueueMessage, getChatWithRetry } = require('./utils/messageQueue');
 require('dotenv').config({ override: true });
 if (originalPort) process.env.PORT = originalPort; // Restore environment PORT to prevent override
 
@@ -934,10 +934,13 @@ async function runScheduledJob(schedule) {
     try {
       verifyClientReadyForSend(client);
       await enqueueMessage(guid, async () => {
+        console.log(`[Schedule] Loading chat for group: ${groupId}`);
+        const chat = await getChatWithRetry(client, groupId);
+        console.log(`[Schedule] Group chat loaded successfully. Sending message to ${groupId}...`);
         if (media) {
-          await client.sendMessage(groupId, media, { caption: schedule.message });
+          await chat.sendMessage(media, { caption: schedule.message });
         } else {
-          await client.sendMessage(groupId, schedule.message);
+          await chat.sendMessage(schedule.message);
         }
       });
     } catch (err) {
