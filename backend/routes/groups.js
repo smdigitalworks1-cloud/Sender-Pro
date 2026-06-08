@@ -238,6 +238,10 @@ router.get('/:groupId/participants', protect, async (req, res) => {
                 { participants: fresh, lastUpdated: new Date() },
                 { upsert: true, new: true }
               );
+              await GroupsCache.updateOne(
+                { userId, "groups.id": groupId },
+                { $set: { "groups.$.participantCount": fresh.length } }
+              );
               console.log(`[GroupGrabber] Background cache update success: ${fresh.length} participants for ${groupId}`);
             }
           } catch (err) {
@@ -265,6 +269,10 @@ router.get('/:groupId/participants', protect, async (req, res) => {
       { userId, groupId },
       { participants: formatted, lastUpdated: new Date() },
       { upsert: true, new: true }
+    );
+    await GroupsCache.updateOne(
+      { userId, "groups.id": groupId },
+      { $set: { "groups.$.participantCount": formatted.length } }
     );
     console.log(`[GroupGrabber] Cached ${formatted.length} participants for group ${groupId}`);
 

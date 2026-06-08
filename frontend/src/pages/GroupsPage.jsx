@@ -143,7 +143,7 @@ export default function GroupsPage() {
                     </div>
                     <div style={{ flex: 1 }}>
                       <div style={{ fontWeight: 600, color: 'var(--text)', fontSize: 14 }}>{g.name}</div>
-                      <div style={{ color: 'var(--text3)', fontSize: 12 }}>{g.participantCount} participants</div>
+                      <div style={{ color: 'var(--text3)', fontSize: 12 }}>{parts[g.id] ? parts[g.id].length : g.participantCount} participants</div>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                       <button className="btn btn-ghost" style={{ fontSize: 12, padding: '6px 12px' }}
