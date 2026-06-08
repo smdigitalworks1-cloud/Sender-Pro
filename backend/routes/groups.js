@@ -117,11 +117,20 @@ async function fetchAndCacheGroups(client, userId) {
           if (!metadata && window.Store.GroupMetadata) {
             metadata = window.Store.GroupMetadata.get(chat.id._serialized || chat.id);
           }
+          let nameVal = chat.name || chat.formattedTitle || chat.title || "Unknown Group";
+          if (typeof nameVal !== 'string') {
+            nameVal = (nameVal && typeof nameVal === 'object') ? (nameVal.name || nameVal.formattedTitle || "Unknown Group") : "Unknown Group";
+          }
+          if (typeof nameVal !== 'string') nameVal = String(nameVal);
+
+          let descVal = metadata?.desc || chat.description || "";
+          if (typeof descVal !== 'string') descVal = "";
+
           return {
             id: chat.id._serialized || chat.id,
-            name: chat.name || chat.formattedTitle || chat.title || "Unknown Group",
+            name: nameVal,
             participantCount: metadata?.participants?.length || chat.participants?.length || 0,
-            description: metadata?.desc || chat.description || "",
+            description: descVal,
           };
         });
       }),
