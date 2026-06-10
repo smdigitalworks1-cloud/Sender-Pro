@@ -1181,50 +1181,42 @@ export default function GroupAutomationPage() {
                                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--accent)', marginBottom: 15 }}>
                                         <Play size={16} /> <b>Flow Start Setting</b>
                                     </div>
-                                    <div style={{ display: 'flex', gap: 10, marginBottom: 10 }}>
-                                        <button type="button" className={`btn ${selectedAutomation?.triggerType === 'manual' ? 'btn-primary' : 'btn-ghost'}`} style={{ flex: 1 }} onClick={() => setSelectedAutomation({ ...selectedAutomation, triggerType: 'manual' })}>Manual Run</button>
-                                        <button type="button" className={`btn ${selectedAutomation?.triggerType === 'schedule' ? 'btn-primary' : 'btn-ghost'}`} style={{ flex: 1 }} onClick={() => setSelectedAutomation({ ...selectedAutomation, triggerType: 'schedule' })}>Specific Date</button>
+                                    <div style={{ color: 'var(--text2)', fontSize: 13, lineHeight: 1.5 }}>
+                                        This workflow starts manually. Click the <b>Run Now</b> button in the top right header to start sending messages to the target groups.
                                     </div>
-                                    {selectedAutomation?.triggerType === 'schedule' && (
-                                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 }}>
-                                            <label style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 600 }}>Event / Appointment Time:</label>
-                                            <input type="datetime-local" className="input" value={selectedAutomation?.eventTime ? formatDateTimeLocal(selectedAutomation.eventTime) : ''} onChange={e => setSelectedAutomation({ ...selectedAutomation, eventTime: e.target.value, scheduledAt: e.target.value })} />
-                                            <span style={{ fontSize: 10, color: 'var(--text3)' }}>Used as the start time and the base for "Event / Appointment time" waits.</span>
-                                        </div>
-                                    )}
+                                </div>
 
-                                    {/* Direct helper to select groups in settings */}
-                                    <div style={{ 
-                                        marginTop: 15, 
-                                        paddingTop: 15, 
-                                        borderTop: '1px dashed var(--border)', 
-                                        display: 'flex', 
-                                        justifyContent: 'space-between', 
-                                        alignItems: 'center' 
-                                    }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text2)' }}>
-                                            <Users2 size={14} style={{ color: 'var(--accent)' }} />
-                                            <span>
-                                                Target Groups: <b>{builderState.targetGroups.length} selected</b>
-                                            </span>
-                                        </div>
-                                        <button 
-                                            type="button" 
-                                            className="btn btn-ghost" 
-                                            onClick={() => setBuilderTab('settings')}
-                                            style={{ 
-                                                fontSize: 11, 
-                                                padding: '4px 10px', 
-                                                borderRadius: 6, 
-                                                height: 'auto',
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                gap: 4
-                                            }}
-                                        >
-                                            <Settings size={12} /> Select Groups
-                                        </button>
+                                {/* Direct helper to select groups in settings */}
+                                <div style={{ 
+                                    marginTop: 15, 
+                                    paddingTop: 15, 
+                                    borderTop: '1px dashed var(--border)', 
+                                    display: 'flex', 
+                                    justifyContent: 'space-between', 
+                                    alignItems: 'center' 
+                                }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text2)' }}>
+                                        <Users2 size={14} style={{ color: 'var(--accent)' }} />
+                                        <span>
+                                            Target Groups: <b>{builderState.targetGroups.length} selected</b>
+                                        </span>
                                     </div>
+                                    <button 
+                                        type="button" 
+                                        className="btn btn-ghost" 
+                                        onClick={() => setBuilderTab('settings')}
+                                        style={{ 
+                                            fontSize: 11, 
+                                            padding: '4px 10px', 
+                                            borderRadius: 6, 
+                                            height: 'auto',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: 4
+                                        }}
+                                    >
+                                        <Settings size={12} /> Select Groups
+                                    </button>
                                 </div>
 
                                 {/* Render connector from Start to first step */}
@@ -1442,43 +1434,6 @@ export default function GroupAutomationPage() {
                                         placeholder="Enter Automation Name"
                                     />
                                 </div>
-
-                                <div className="form-group" style={{ marginBottom: 20 }}>
-                                    <label className="label" style={{ fontWeight: 600 }}>Trigger / Flow Start Type</label>
-                                    <div style={{ display: 'flex', gap: 10, marginTop: 5 }}>
-                                        <button 
-                                            type="button" 
-                                            className={`btn ${selectedAutomation?.triggerType === 'manual' ? 'btn-primary' : 'btn-ghost'}`} 
-                                            style={{ flex: 1 }} 
-                                            onClick={() => setSelectedAutomation({ ...selectedAutomation, triggerType: 'manual' })}
-                                        >
-                                            Manual (Run Now)
-                                        </button>
-                                        <button 
-                                            type="button" 
-                                            className={`btn ${selectedAutomation?.triggerType === 'schedule' ? 'btn-primary' : 'btn-ghost'}`} 
-                                            style={{ flex: 1 }} 
-                                            onClick={() => setSelectedAutomation({ ...selectedAutomation, triggerType: 'schedule' })}
-                                        >
-                                            Scheduled Specific Date
-                                        </button>
-                                    </div>
-                                </div>
-
-                                {selectedAutomation?.triggerType === 'schedule' && (
-                                    <div className="form-group fade-in" style={{ marginBottom: 20 }}>
-                                        <label className="label" style={{ fontWeight: 600 }}>Event / Appointment Time</label>
-                                        <input 
-                                            type="datetime-local" 
-                                            className="input" 
-                                            value={selectedAutomation?.eventTime ? formatDateTimeLocal(selectedAutomation.eventTime) : ''} 
-                                            onChange={e => setSelectedAutomation({ ...selectedAutomation, eventTime: e.target.value, scheduledAt: e.target.value })} 
-                                        />
-                                        <span style={{ fontSize: 11, color: 'var(--text3)', display: 'block', marginTop: 4 }}>
-                                            The scheduled datetime used for running the flow and calculating "Event / Appointment time" delay steps.
-                                        </span>
-                                    </div>
-                                )}
                             </div>
 
                             {/* Groups List Selection */}
@@ -1964,19 +1919,6 @@ export default function GroupAutomationPage() {
                                 <label className="label">Automation Name</label>
                                 <input className="input" placeholder="e.g. Daily Offer" value={autoForm.name} onChange={e => setAutoForm({ ...autoForm, name: e.target.value })} required />
                             </div>
-                            <div className="form-group">
-                                <label className="label">Trigger Type</label>
-                                <div style={{ display: 'flex', gap: 10, marginTop: 5 }}>
-                                    <button type="button" className={`btn ${autoForm.triggerType === 'manual' ? 'btn-primary' : 'btn-ghost'}`} style={{ flex: 1 }} onClick={() => setAutoForm({ ...autoForm, triggerType: 'manual' })}>Manual (Run Now)</button>
-                                    <button type="button" className={`btn ${autoForm.triggerType === 'schedule' ? 'btn-primary' : 'btn-ghost'}`} style={{ flex: 1 }} onClick={() => setAutoForm({ ...autoForm, triggerType: 'schedule' })}>Scheduled Time</button>
-                                </div>
-                            </div>
-                            {autoForm.triggerType === 'schedule' && (
-                                <div className="form-group">
-                                    <label className="label">Select Date & Time</label>
-                                    <input type="datetime-local" className="input" value={autoForm.scheduledAt ? formatDateTimeLocal(autoForm.scheduledAt) : ''} onChange={e => setAutoForm({ ...autoForm, scheduledAt: e.target.value })} required />
-                                </div>
-                            )}
                             <div style={{ display: 'flex', gap: 10, marginTop: 20, justifyContent: 'flex-end' }}>
                                 <button type="button" className="btn btn-ghost" onClick={() => setShowAutoModal(false)}>Cancel</button>
                                 <button type="submit" className="btn btn-primary">Create</button>

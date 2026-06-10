@@ -738,8 +738,7 @@ async function _doInit(guid, userId, isSuper, attempt = 1) {
         }, delay);
         initTimeouts.set(guid, retryTimeoutId);
       } else {
-        console.error(`❌ WhatsApp init failed [${guid}] after ${attemptNum} attempts:`, msg);
-        wipeCorruptSession(guid, userId, isSuper, `init_failed: ${msg}`);
+        console.error(`❌ WhatsApp init failed [${guid}] after ${attemptNum} attempts: ${msg}`);
         updateStatus(guid, 'disconnected', { reason: 'init_failed' });
       }
     });
@@ -1225,14 +1224,13 @@ async function bootstrap() {
         const timestamp = statusTimestamps.get(guid) || Date.now();
         const timeDiff = Date.now() - timestamp;
 
-        // Stuck Connection Recovery: If state is 'connecting' or 'qr' for more than 3 minutes, wipe corrupt session
+        // Stuck Connection Recovery: If state is 'connecting' or 'qr' for more than 3 minutes, reset client (no session wipe)
         if (client && (status === 'connecting' || status === 'qr') && timeDiff > 180000) {
-          console.warn(`🚨 [Keep-Alive] Client for [${guid}] is stuck in [${status}] for ${(timeDiff / 1000).toFixed(0)}s. Wiping corrupt session...`);
+          console.warn(`🚨 [Keep-Alive] Client for [${guid}] is stuck in [${status}] for ${(timeDiff / 1000).toFixed(0)}s. Resetting client (no session wipe)...`);
           try {
             await client.destroy();
           } catch (e) {}
           waClients.delete(guid);
-          wipeCorruptSession(guid, userId, isSuper, `stuck_in_${status}_for_${(timeDiff / 1000).toFixed(0)}s`);
           updateStatus(guid, 'disconnected', { reason: 'stuck_timeout' });
           continue;
         }

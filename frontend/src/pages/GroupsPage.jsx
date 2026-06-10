@@ -1,14 +1,17 @@
 import { useState, useEffect, useRef } from 'react';
 import api from '../utils/api';
 import toast from 'react-hot-toast';
-import { Users2, RefreshCw, Download, ChevronDown, ChevronRight, ShieldCheck, Search } from 'lucide-react';
+import { Users2, RefreshCw, Download, ChevronDown, ChevronRight, ShieldCheck, Search, WifiOff } from 'lucide-react';
 import { io } from 'socket.io-client';
 import { useAuth } from '../context/AuthContext';
+import { useWhatsApp } from '../hooks/useWhatsApp';
+import { Link } from 'react-router-dom';
 
 const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || (process.env.NODE_ENV === 'development' ? 'http://localhost:5000' : window.location.origin);
 
 export default function GroupsPage() {
   const { user } = useAuth();
+  const { status } = useWhatsApp();
   const [groups, setGroups] = useState([]);
   const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState(null);
@@ -103,13 +106,28 @@ export default function GroupsPage() {
           <div className="page-title">Group Grabber</div>
           <div className="page-sub">Extract contacts from your WhatsApp groups</div>
         </div>
-        <button className="btn btn-primary" onClick={() => loadGroups(true)} disabled={loading}>
-          <RefreshCw size={14} className={loading ? 'spin' : ''} />
-          {loading ? 'Loading...' : 'Fetch Groups'}
-        </button>
+        {status === 'connected' && (
+          <button className="btn btn-primary" onClick={() => loadGroups(true)} disabled={loading}>
+            <RefreshCw size={14} className={loading ? 'spin' : ''} />
+            {loading ? 'Loading...' : 'Fetch Groups'}
+          </button>
+        )}
       </div>
 
-      {groups.length === 0 ? (
+      {status !== 'connected' ? (
+        <div className="card" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '60px 20px', minHeight: 340, textAlign: 'center' }}>
+          <div style={{ width: 64, height: 64, borderRadius: 20, background: 'rgba(239, 68, 68, 0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 20 }}>
+            <WifiOff size={30} color="var(--red)" />
+          </div>
+          <h3 style={{ fontFamily: 'var(--font-head)', fontSize: 18, fontWeight: 700, color: 'var(--text2)', marginBottom: 8 }}>WhatsApp Disconnected</h3>
+          <p style={{ color: 'var(--text3)', fontSize: 13, maxWidth: 380, marginBottom: 24, lineHeight: 1.5 }}>
+            Your WhatsApp is not connected. Please link your WhatsApp account first to load and extract contacts from your groups.
+          </p>
+          <Link to="/whatsapp" className="btn btn-primary">
+            Go to WhatsApp Connection
+          </Link>
+        </div>
+      ) : groups.length === 0 ? (
         <div className="empty-state card">
           <Users2 size={48} />
           <h3>No Groups Loaded</h3>

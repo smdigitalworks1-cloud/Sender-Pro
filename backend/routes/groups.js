@@ -170,13 +170,9 @@ router.get('/', protect, async (req, res) => {
     // Check if we have cached groups
     const cachedData = await GroupsCache.findOne({ userId });
 
-    // If WhatsApp client is NOT completely connected or ready, fall back to cache immediately
+    // If WhatsApp client is NOT completely connected or ready, do not return cached groups.
     if (!client || !client.info) {
-      if (cachedData) {
-        console.log(`ℹ️ [GroupGrabber] Client is not ready. Returning cached group list (fallback) for user ${userId}`);
-        return res.json(cachedData.groups);
-      }
-      return res.status(400).json({ message: 'WhatsApp is not completely connected. Scan QR first.' });
+      return res.status(400).json({ message: 'WhatsApp is not connected. Please connect WhatsApp first.' });
     }
 
     // Stale-While-Revalidate: Return cache immediately if not a force refresh
